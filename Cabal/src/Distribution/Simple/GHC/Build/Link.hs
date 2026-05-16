@@ -906,18 +906,41 @@ linkDepArchives lbi targetPath linkOpts = do
           names <- listDirectory dir
           return [dir FP.</> n | n <- names, isHSLib uidStrings libExts n]
 
-    walkMatching uidStrings libExts root = do
-      exists <- doesDirectoryExist root
-      if not exists
-        then return []
-        else do
-          names <- listDirectory root
-          fmap concat $ for names $ \n -> do
-            let p = root FP.</> n
-            isDir <- doesDirectoryExist p
-            if isDir
-              then walkMatching uidStrings libExts p
-              else
-                if isHSLib uidStrings libExts n
-                  then return [p]
-                  else return []
+    -- Depth-capped walk that skips hidden dirs and known-noise
+    -- siblings (autogen, paths, doc, src tarballs). Without the cap
+    -- this would descend into anything under
+    -- @dist-newstyle/build/<plat>/<ghc>/<pkg>-V/@, which on a big
+    -- monorepo can be thousands of files per exe link. Cabal's
+    -- per-package layout doesn't exceed seven levels, so a cap of
+    -- eight comfortably covers any in-tree component archive.
+    walkMatching uidStrings libExts root = go (0 :: Int) root
+      where
+        maxDepth = 8
+        skipDir n = case n of
+          ""           -> True
+          ('.' : _)    -> True
+          "autogen"    -> True
+          "doc"        -> True
+          "src"        -> True
+          "tmp"        -> True
+          _            -> False
+        go depth dir
+          | depth > maxDepth = return []
+          | otherwise = do
+              exists <- doesDirectoryExist dir
+              if not exists
+                then return []
+                else do
+                  names <- listDirectory dir
+                  fmap concat $ for names $ \n -> do
+                    let p = dir FP.</> n
+                    isDir <- doesDirectoryExist p
+                    if isDir
+                      then
+                        if skipDir n
+                          then return []
+                          else go (depth + 1) p
+                      else
+                        if isHSLib uidStrings libExts n
+                          then return [p]
+                          else return []
