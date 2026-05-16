@@ -837,6 +837,18 @@ authoritative list):
 * @CABAL_LINK_CACHE_DIR=\/path@ — override the cache root.
 * @CABAL_LINK_CACHE_MAX_BYTES=N@ — size cap (default 5 GiB). On a
   miss-with-write the oldest blobs are evicted until under cap.
+* @CABAL_LINK_CACHE_NO_STAT=1@ — disable the @(size, mtime)@-based
+  short-circuit; force a full MD5 read of every input on every link.
+* @CABAL_LINK_CACHE_NO_STATS=1@ — don't append hit\/miss telemetry to
+  @.stats.jsonl@ under the cache root.
+* @CABAL_LINK_CACHE_VERIFY=1@ — canary mode: on a hit, re-run the
+  linker and bytewise-compare its output against the cached blob.
+  Mismatches are reported and dumped under @divergences\/\<key\>\/@
+  for offline inspection. Trades the cache speedup for a determinism
+  check; never the default.
+* @CABAL_LINK_CACHE_VERIFY_FAIL=1@ — combined with the above,
+  escalates a verification mismatch to a hard build error rather
+  than a log message.
 -}
 
 -- | Resolve the on-disk paths of dep-package archives ghc will pull in

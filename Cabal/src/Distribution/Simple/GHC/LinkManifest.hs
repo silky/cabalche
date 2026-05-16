@@ -32,7 +32,7 @@ import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, takeDirectory, takeFileName, (</>))
 import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryTempFile, withFile)
 
-import Distribution.Simple.Utils (info, noticeNoWrap)
+import Distribution.Simple.Utils (die', info, noticeNoWrap)
 import Distribution.Utils.MD5 (md5, showMD5)
 import Distribution.Verbosity (Verbosity)
 
@@ -67,6 +67,13 @@ statIndexName = ".stat-index.v1"
 --   on input hashing (forces a full read+MD5 of every input file).
 -- * @CABAL_LINK_CACHE_NO_STATS=1@ disables the per-link telemetry append
 --   to @.stats.jsonl@ under the cache root.
+-- * @CABAL_LINK_CACHE_VERIFY=1@ enables canary mode: on a hit the
+--   linker still runs and its output is bytewise-compared against the
+--   cached blob. Mismatches are reported and dumped under
+--   @divergences\/\<key\>\/@.
+-- * @CABAL_LINK_CACHE_VERIFY_FAIL=1@ (only meaningful together with
+--   @CABAL_LINK_CACHE_VERIFY@) escalates a verification mismatch to a
+--   hard build error rather than a log message.
 withSkippableLink
   :: Verbosity
   -> FilePath
@@ -87,12 +94,19 @@ withSkippableLink verbosity target tool inputs action = do
     _ -> cachedLink verbosity target tool inputs action
 
 -- | Outcome of a single 'cachedLink' invocation, used for telemetry.
-data StatsOutcome = StatsHit | StatsMiss | StatsDisabled
+data StatsOutcome
+  = StatsHit
+  | StatsMiss
+  | StatsDisabled
+  | StatsHitVerified
+  | StatsHitDiverged
 
 outcomeWord :: StatsOutcome -> String
 outcomeWord StatsHit = "hit"
 outcomeWord StatsMiss = "miss"
 outcomeWord StatsDisabled = "disabled"
+outcomeWord StatsHitVerified = "hit-verified"
+outcomeWord StatsHitDiverged = "hit-diverged"
 
 -- | Wrap the cache logic so any IOError (no writable @$XDG_CACHE_HOME@
 -- — e.g. nix sandbox sets @HOME=/homeless-shelter@; read-only home;
@@ -133,13 +147,18 @@ cachedLinkUnsafe verbosity target tool inputs action = do
   hit <- doesFileExist blobPath
   if hit
     then do
-      noticeNoWrap verbosity $
-        "[link-cache] HIT (" <> tool <> ") " <> target <> "\n"
-      atomicCopy blobPath target
-      -- Bump mtime so the GC's LRU eviction order reflects use, not just
-      -- write time. Best-effort: ignore failure.
-      touchSilently blobPath
-      return StatsHit
+      verifyMode <- lookupEnv "CABAL_LINK_CACHE_VERIFY"
+      case verifyMode of
+        Just s | not (null s) ->
+          verifyHit verbosity tool target action blobPath cacheDir key
+        _ -> do
+          noticeNoWrap verbosity $
+            "[link-cache] HIT (" <> tool <> ") " <> target <> "\n"
+          atomicCopy blobPath target
+          -- Bump mtime so the GC's LRU eviction order reflects use,
+          -- not just write time. Best-effort: ignore failure.
+          touchSilently blobPath
+          return StatsHit
     else do
       info verbosity $ "[link-cache] MISS (" <> tool <> ") " <> target
       action
@@ -398,3 +417,55 @@ jsonStr s = '"' : concatMap esc s ++ "\""
     esc '\r' = "\\r"
     esc '\t' = "\\t"
     esc c = [c]
+
+-- | Re-run the linker and bytewise-compare its fresh output against
+-- the cached blob. On match emits @[link-cache] HIT-VERIFIED@. On
+-- mismatch emits @[link-cache] HIT-DIVERGED@, dumps both files to
+-- @\<cacheDir\>/divergences/\<key\>/@, and (with
+-- @CABAL_LINK_CACHE_VERIFY_FAIL=1@) escalates to a hard error. Even
+-- on a mismatch the freshly-linked target is left in place, so the
+-- build proceeds with the linker's authoritative output rather than
+-- the suspect blob.
+verifyHit
+  :: Verbosity
+  -> String
+  -> FilePath
+  -> IO ()
+  -> FilePath
+  -> FilePath
+  -> String
+  -> IO StatsOutcome
+verifyHit verbosity tool target action blobPath cacheDir key = do
+  action
+  produced <- doesFileExist target
+  if not produced
+    then do
+      noticeNoWrap verbosity $
+        "[link-cache] HIT-DIVERGED (" <> tool <> ") " <> target
+          <> ": linker produced no output\n"
+      return StatsHitDiverged
+    else do
+      blobBytes <- BS.readFile blobPath
+      freshBytes <- BS.readFile target
+      if blobBytes == freshBytes
+        then do
+          noticeNoWrap verbosity $
+            "[link-cache] HIT-VERIFIED (" <> tool <> ") " <> target <> "\n"
+          touchSilently blobPath
+          return StatsHitVerified
+        else do
+          let dumpDir = cacheDir </> "divergences" </> key
+          createDirectoryIfMissing True dumpDir
+          atomicCopy blobPath (dumpDir </> "blob")
+          atomicCopy target (dumpDir </> "linker")
+          noticeNoWrap verbosity $
+            "[link-cache] HIT-DIVERGED (" <> tool <> ") " <> target
+              <> " (see " <> dumpDir <> ")\n"
+          failHard <- lookupEnv "CABAL_LINK_CACHE_VERIFY_FAIL"
+          case failHard of
+            Just s | not (null s) ->
+              die' verbosity $
+                "[link-cache] verification mismatch for "
+                  <> target <> " (tool=" <> tool <> ")"
+            _ -> return ()
+          return StatsHitDiverged
