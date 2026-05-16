@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -46,15 +47,29 @@ import Distribution.Utils.MD5 (md5, showMD5)
 import Distribution.Verbosity (Verbosity)
 import Numeric (showHex)
 
+#if !defined(mingw32_HOST_OS)
+import qualified System.Posix.Files as Posix
+#endif
+
 -- | Default cap when @CABAL_LINK_CACHE_MAX_BYTES@ is unset or unparseable.
 defaultMaxBytes :: Integer
 defaultMaxBytes = 5 * 1024 * 1024 * 1024
 
 -- | In-memory stat-index: maps each input file's absolute path to
--- @(size, mtime, md5)@. If the @(size, mtime)@ of the file on disk
--- matches the stored tuple, we trust the stored md5 and skip the
--- file read.
-type StatIndex = Map.Map FilePath (Integer, String, String)
+-- @(size, mtime, inode, hash)@. If the on-disk file's @(size, mtime,
+-- inode)@ all match the stored tuple we trust the stored hash and
+-- skip the file read.
+--
+-- Inode is included as defence in depth against
+-- @tar --preserve-timestamps@-style replacement: another process can
+-- write byte-different content with identical size and mtime, but
+-- it cannot keep the inode (the rename swap allocates a fresh one).
+-- On Windows inode is always 0, so the check is effectively a
+-- @(size, mtime)@ check there, matching the prior behaviour.
+type StatIndex = Map.Map FilePath StatEntry
+
+type StatEntry = (Integer, String, Integer, String)
+  -- ^ @(size, mtime_picos, inode, hash_hex)@
 
 -- | Sidecar filename relative to the cache root. The version suffix
 -- gets bumped whenever the encoded row format or hash algorithm
@@ -224,6 +239,23 @@ xxh64Hex bs =
       raw = showHex h ""
   in replicate (16 - length raw) '0' ++ raw
 
+-- | On POSIX, the inode number from @stat()@. The stat short-circuit
+-- includes this in its key so that a peer process replacing the
+-- file via rename (a fresh inode) is detected even when size and
+-- mtime are kept identical.
+--
+-- On Windows the equivalent (the file index from
+-- @GetFileInformationByHandle@) is not available without opening a
+-- file handle. We return 0 here, which makes the stat check
+-- size-and-mtime-only on Windows -- the original behaviour.
+fileInode :: FilePath -> IO Integer
+#if defined(mingw32_HOST_OS)
+fileInode _ = return 0
+#else
+fileInode path =
+  fmap (fromIntegral . Posix.fileID) (Posix.getFileStatus path)
+#endif
+
 -- | Run @action@ over each input concurrently, with at most
 -- @max 4 numCapabilities@ workers in flight. Order of results matches
 -- the input list. Exceptions in workers are rethrown in the caller.
@@ -268,15 +300,17 @@ hashInputCached
 hashInputCached indexRef dirtyRef indexPath path = do
   size <- getFileSize path
   mtime <- getModificationTime path
+  ino <- fileInode path
   let mtimeStr = show (utcTimeToPOSIXSeconds mtime)
   ix <- getIndex
   case Map.lookup path ix of
-    Just (s, m, h) | s == size && m == mtimeStr ->
-      return (takeFileName path, h)
+    Just (s, m, i, h)
+      | s == size && m == mtimeStr && i == ino ->
+        return (takeFileName path, h)
     _ -> do
       bytes <- BS.readFile path
       let h = xxh64Hex bytes
-      modifyIORef' indexRef (fmap (Map.insert path (size, mtimeStr, h)))
+      modifyIORef' indexRef (fmap (Map.insert path (size, mtimeStr, ino, h)))
       writeIORef dirtyRef True
       return (takeFileName path, h)
   where
@@ -296,14 +330,21 @@ readStatIndex p = do
     else do
       raw <- BS.readFile p
       let ls = BS8.lines raw
-      return $ Map.fromList [(p', (sz, mt, h)) | line <- ls, Just (p', sz, mt, h) <- [parseStatLine line]]
+      return $ Map.fromList
+        [ (p', (sz, mt, ino, h))
+        | line <- ls
+        , Just (p', sz, mt, ino, h) <- [parseStatLine line]
+        ]
 
-parseStatLine :: BS.ByteString -> Maybe (FilePath, Integer, String, String)
+-- | Accept the current five-field layout. Earlier four-field rows
+-- (no inode) are silently dropped and self-heal on the next link.
+parseStatLine :: BS.ByteString -> Maybe (FilePath, Integer, String, Integer, String)
 parseStatLine line =
   case BS8.split '\t' line of
-    [pBs, szBs, mtBs, hBs] -> do
+    [pBs, szBs, mtBs, inoBs, hBs] -> do
       sz <- readMaybe (BS8.unpack szBs)
-      return (BS8.unpack pBs, sz, BS8.unpack mtBs, BS8.unpack hBs)
+      ino <- readMaybe (BS8.unpack inoBs)
+      return (BS8.unpack pBs, sz, BS8.unpack mtBs, ino, BS8.unpack hBs)
     _ -> Nothing
 
 flushStatIndex :: IORef (Maybe StatIndex) -> IORef Bool -> FilePath -> IO ()
@@ -327,8 +368,8 @@ writeStatIndex path ours = do
   let merged = Map.union ours onDisk
       body =
         unlines
-          [ pth <> "\t" <> show sz <> "\t" <> mt <> "\t" <> h
-          | (pth, (sz, mt, h)) <- Map.toAscList merged
+          [ pth <> "\t" <> show sz <> "\t" <> mt <> "\t" <> show ino <> "\t" <> h
+          | (pth, (sz, mt, ino, h)) <- Map.toAscList merged
           ]
   atomicWriteBytes path (BS8.pack body)
 
