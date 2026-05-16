@@ -8,56 +8,50 @@
 
   outputs = { self, nixpkgs, flake-utils }:
     let
-      # Stock nixpkgs ghc984 is sufficient: the link-output cache lives
-      # in lib:Cabal and works with any GHC. The user's in-tree GHC fork
-      # is only relevant when *running* cabal against that compiler, not
-      # when building cabal-install itself.
+      # The link-output cache lives in lib:Cabal and is GHC-agnostic, but
+      # the cabal-install binary we ship has to be built against *some*
+      # GHC. ghc984 is what nixpkgs unstable's stock haskellPackages set
+      # is built against, so picking it means we don't trigger a haskell-
+      # world rebuild. Consumers wanting a different GHC can either:
+      #
+      #   * use packages.cabal directly (statically linked, GHC choice
+      #     is invisible to them), or
+      #   * apply overlays.default to their own nixpkgs and reach for
+      #     pkgs.haskell.packages.${ghcAttr}.cabal-install, knowing the
+      #     overlay only touches that attr.
       ghcAttr = "ghc984";
 
-      # Per-package sources: each sub-package gets its own cleaned
-      # source path. Using sub-paths directly (rather than
-      # `${src}/Cabal-syntax`) means flake.nix edits don't invalidate
-      # the haskell-package store hashes -- only edits inside the
-      # respective sub-package do. Each filter strips dist/ and the
-      # like in case the user has run plain `cabal build` in a sub-dir.
-      cleanPkgSrc = name: dir: nixpkgs.lib.cleanSourceWith {
-        src = dir;
-        name = "${name}-source";
-        filter = path: _type:
-          let base = baseNameOf (toString path); in
-          !(builtins.elem base [
-            ".git"
-            ".direnv"
-            "dist"
-            "dist-newstyle"
-            "result"
-          ]) && !(nixpkgs.lib.hasPrefix "result-" base);
-      };
-      cabalSyntaxSrc        = cleanPkgSrc "Cabal-syntax"         ./Cabal-syntax;
-      cabalSrc              = cleanPkgSrc "Cabal"                ./Cabal;
-      cabalInstallSolverSrc = cleanPkgSrc "cabal-install-solver" ./cabal-install-solver;
-      cabalInstallSrc       = cleanPkgSrc "cabal-install"        ./cabal-install;
-      hooksExeSrc           = cleanPkgSrc "hooks-exe"            ./hooks-exe;
-
-      # We deliberately do NOT override `Cabal` and `Cabal-syntax` in
-      # the haskellPackages set. lib:Cabal is in essentially every
-      # haskell package's setup-depends, so a global override forces
-      # nixpkgs to rebuild the entire haskell world. Instead, the
-      # patched libraries are private to cabal-install-solver /
-      # cabal-install, passed via callCabal2nix's per-package argument
-      # set. The consumer-visible `cabal` binary still links against the
-      # patched Cabal -- which is the only thing that matters here.
-      #
-      # doJailbreak: nixpkgs unstable sometimes runs ahead of cabal's
-      # bounds. Jailbreaking is the nixpkgs-haskell convention; safer
-      # than chasing upper-bound bumps in this flake.
-      #
-      # `Cabal-described = null` etc.: cabal2nix surfaces test-only deps
-      # in the function signature even when `doCheck = false`. Passing
-      # null satisfies the binding without pulling them into the build.
       overlay = final: prev:
         let
-          hslib = prev.haskell.lib.compose;
+          hslib = final.haskell.lib.compose;
+
+          # Each sub-package gets its own cleaned source path so that
+          # unrelated tree changes (a flake.nix edit, a stray
+          # dist-newstyle) don't bust the haskell-package store hashes.
+          cleanPkgSrc = name: src: final.lib.cleanSourceWith {
+            inherit src;
+            name = "${name}-source";
+            filter = path: _type:
+              let base = baseNameOf (toString path); in
+              !(builtins.elem base [
+                ".git"
+                ".direnv"
+                "dist"
+                "dist-newstyle"
+                "result"
+              ]) && !(final.lib.hasPrefix "result-" base);
+          };
+
+          # Load a callPackage-style derivation from nix/<name>.nix and
+          # swap its src for the cleaned per-package source. The .nix
+          # files under nix/ are cabal2nix-generated and committed --
+          # see scripts/regen-nix.sh -- which keeps flake evaluation
+          # IFD-free so this flake can be consumed under
+          # `nix flake check --no-allow-import-from-derivation`.
+          mkPatched = hself: name: srcDir: deps:
+            hslib.doJailbreak
+              (hslib.overrideSrc { src = cleanPkgSrc name srcDir; }
+                (hself.callPackage (./nix + "/${name}.nix") deps));
         in
         {
           haskell = prev.haskell // {
@@ -65,23 +59,26 @@
               ${ghcAttr} = prev.haskell.packages.${ghcAttr}.extend
                 (hself: hprev:
                   let
-                    # Jailbreak patched Cabal/Cabal-syntax so their own
-                    # process/binary/etc. upper bounds don't fight
-                    # nixpkgs-unstable's newer versions.
-                    patchedCabalSyntax = hslib.doJailbreak
-                      (hself.callCabal2nix "Cabal-syntax" cabalSyntaxSrc { });
-                    patchedCabal = hslib.doJailbreak
-                      (hself.callCabal2nix "Cabal"
-                        cabalSrc { Cabal-syntax = patchedCabalSyntax; });
-                    # hooks-exe is an in-tree sibling on master; rebuild
-                    # against the patched Cabal/Cabal-syntax so package
-                    # IDs match what cabal-install links against.
-                    patchedHooksExe = hslib.doJailbreak
-                      (hself.callCabal2nix "hooks-exe"
-                        hooksExeSrc {
-                          Cabal        = patchedCabal;
-                          Cabal-syntax = patchedCabalSyntax;
-                        });
+                    # We deliberately do NOT override Cabal/Cabal-syntax
+                    # in the global haskell package set. lib:Cabal is in
+                    # essentially every haskell package's setup-depends,
+                    # so a global override would force nixpkgs to
+                    # rebuild the entire haskell world. Instead, the
+                    # patched libraries are local to this set's
+                    # cabal-install / cabal-install-solver / hooks-exe.
+                    patchedCabalSyntax = mkPatched hself
+                      "Cabal-syntax" ./Cabal-syntax { };
+                    patchedCabal = mkPatched hself
+                      "Cabal" ./Cabal {
+                        Cabal-syntax = patchedCabalSyntax;
+                      };
+                    patchedHooksExe = mkPatched hself
+                      "hooks-exe" ./hooks-exe {
+                        Cabal        = patchedCabal;
+                        Cabal-syntax = patchedCabalSyntax;
+                      };
+                  in
+                  {
                     # Any transitive dep of cabal-install that uses
                     # Cabal-syntax in its public API must rebuild
                     # against the patched Cabal-syntax -- otherwise
@@ -89,31 +86,32 @@
                     # different package-ids and aborts at link time.
                     # hackage-security is the only one in the
                     # cabal-install dep cone.
-                    rebuildAgainstPatched = drv: drv.override {
+                    hackage-security = hprev.hackage-security.override {
                       Cabal        = patchedCabal;
                       Cabal-syntax = patchedCabalSyntax;
                     };
-                  in
-                  {
-                    hackage-security = rebuildAgainstPatched hprev.hackage-security;
-                    cabal-install-solver = hslib.doJailbreak
-                      (hself.callCabal2nix "cabal-install-solver"
-                        cabalInstallSolverSrc {
-                          Cabal-syntax = patchedCabalSyntax;
-                          Cabal        = patchedCabal;
-                        });
-                    cabal-install = hslib.doJailbreak
-                      (hself.callCabal2nix "cabal-install"
-                        cabalInstallSrc {
-                          Cabal-syntax     = patchedCabalSyntax;
-                          Cabal            = patchedCabal;
-                          hooks-exe        = patchedHooksExe;
-                          Cabal-described  = null;
-                          Cabal-QuickCheck = null;
-                          Cabal-tree-diff  = null;
-                          Cabal-tests      = null;
-                          tree-diff        = null;
-                        });
+
+                    cabal-install-solver = mkPatched hself
+                      "cabal-install-solver" ./cabal-install-solver {
+                        Cabal-syntax = patchedCabalSyntax;
+                        Cabal        = patchedCabal;
+                      };
+
+                    # `Cabal-described = null` etc.: cabal2nix surfaces
+                    # test-only deps in the function signature even
+                    # when doCheck = false. Passing null satisfies the
+                    # binding without pulling them into the build.
+                    cabal-install = mkPatched hself
+                      "cabal-install" ./cabal-install {
+                        Cabal-syntax     = patchedCabalSyntax;
+                        Cabal            = patchedCabal;
+                        hooks-exe        = patchedHooksExe;
+                        Cabal-described  = null;
+                        Cabal-QuickCheck = null;
+                        Cabal-tree-diff  = null;
+                        Cabal-tests      = null;
+                        tree-diff        = null;
+                      };
                   });
             };
           };
@@ -121,6 +119,13 @@
     in
     {
       overlays.default = overlay;
+
+      lib = {
+        # The haskell-packages attr the overlay extends. Consumers who
+        # compose the overlay into their pkgs reach for
+        # `pkgs.haskell.packages.${cabalCache.lib.ghcAttr}.cabal-install`.
+        inherit ghcAttr;
+      };
     } // flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs {
@@ -130,34 +135,42 @@
         hsLib = pkgs.haskell.lib.compose;
         hp = pkgs.haskell.packages.${ghcAttr};
 
+        # Annotate so `nix run .#cabal` and `nix shell .#cabal` reach
+        # for `bin/cabal` rather than the package name's `bin/<pname>`.
+        withMeta = drv: drv.overrideAttrs (old: {
+          meta = (old.meta or { }) // {
+            mainProgram = "cabal";
+            description = "cabal-install with link-output cache";
+          };
+        });
+
         # `packages.cabal` is the default flavour: nixpkgs-haskell stock
-        # build (cabal default `-O1`, asserts on by default-via-cabal,
-        # tests disabled, executables stripped). Fast-ish but not as
-        # fast as -O2.
-        cabal-install = hsLib.justStaticExecutables hp.cabal-install;
+        # build (cabal default -O1, asserts on by default-via-cabal,
+        # tests disabled, executables stripped).
+        cabal-install = withMeta (hsLib.justStaticExecutables hp.cabal-install);
 
         # `packages.cabal-optimized`: cabal-install + cabal-install-
         # solver bumped to `-O2 -fexpose-all-unfoldings
         # -fspecialise-aggressively`. The patched Cabal/Cabal-syntax
-        # stay at stock `-O1` so we don't cascade a rebuild of
-        # `hackage-security` etc. -- the patched libs still flow in
-        # unchanged via `callCabal2nix`'s argument set, so the binary
-        # is the same patch-wise; only the two crates ghc spends most
-        # of its codegen budget on get the bump.
+        # stay at stock -O1 so we don't cascade a rebuild of
+        # hackage-security etc. -- the patched libs still flow in
+        # unchanged via callPackage's argument set, so the binary is
+        # the same patch-wise; only the two crates ghc spends most of
+        # its codegen budget on get the bump.
         #
         # Tradeoff: roughly 2-3x longer build, and the resulting cabal
-        # binary is ~10-30% larger. Worth it if you care about cabal
+        # binary is ~10% larger. Worth it if you care about cabal
         # planner / build orchestrator latency on hot paths.
         bumpO2 = drv: hsLib.appendConfigureFlags [
           "--ghc-options=-O2"
           "--ghc-options=-fexpose-all-unfoldings"
           "--ghc-options=-fspecialise-aggressively"
         ] drv;
-        cabal-install-optimized =
-          hsLib.justStaticExecutables
+        cabal-install-optimized = withMeta
+          (hsLib.justStaticExecutables
             ((bumpO2 hp.cabal-install).override {
               cabal-install-solver = bumpO2 hp.cabal-install-solver;
-            });
+            }));
       in
       {
         packages = {
@@ -180,10 +193,19 @@
           };
         };
 
+        # `nix flake check` builds these. Exposing the default package
+        # as a check means CI in a downstream consumer that does
+        # `nix flake check` on the input will catch evaluation drift.
+        checks = {
+          inherit cabal-install cabal-install-optimized;
+        };
+
         devShells.default = hp.shellFor {
           packages = ps: [ ps.cabal-install-solver ps.cabal-install ];
           withHoogle = false;
           nativeBuildInputs = [ pkgs.haskellPackages.cabal-install ];
         };
+
+        formatter = pkgs.nixpkgs-fmt;
       });
 }
