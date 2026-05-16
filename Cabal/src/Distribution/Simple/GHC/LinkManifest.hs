@@ -1,3 +1,6 @@
+{-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 -- | Content-addressed cache for link outputs (@.a@, @.so@,
 -- executables, etc.). See @Note [Link manifest cache]@ in
 -- "Distribution.Simple.GHC.Build.Link" for design rationale.
