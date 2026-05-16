@@ -124,6 +124,7 @@ library
     Distribution.Simple.FileMonitor.Types
     Distribution.Simple.Flag
     Distribution.Simple.GHC
+    Distribution.Simple.GHC.LinkManifest
     Distribution.Simple.GHCJS
     Distribution.Simple.Haddock
     Distribution.Simple.Glob
