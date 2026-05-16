@@ -40,9 +40,11 @@ import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, takeDirectory, takeFileName, (</>))
 import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryTempFile, withFile)
 
+import qualified Data.Digest.XXHash.FFI as XXH
 import Distribution.Simple.Utils (die', info, noticeNoWrap)
 import Distribution.Utils.MD5 (md5, showMD5)
 import Distribution.Verbosity (Verbosity)
+import Numeric (showHex)
 
 -- | Default cap when @CABAL_LINK_CACHE_MAX_BYTES@ is unset or unparseable.
 defaultMaxBytes :: Integer
@@ -54,11 +56,12 @@ defaultMaxBytes = 5 * 1024 * 1024 * 1024
 -- file read.
 type StatIndex = Map.Map FilePath (Integer, String, String)
 
--- | Sidecar filename relative to the cache root. The @.v1@ suffix
--- leaves room for incompatible format changes later (we'd bump to
--- @.v2@ and ignore stale @.v1@).
+-- | Sidecar filename relative to the cache root. The version suffix
+-- gets bumped whenever the encoded row format or hash algorithm
+-- changes. Stale older-version files are simply ignored (and
+-- eventually GC'd along with their accompanying blobs).
 statIndexName :: FilePath
-statIndexName = ".stat-index.v1"
+statIndexName = ".stat-index.v2"
 
 -- | If the inputs hash to an entry already in the link cache, byte-copy
 -- the saved output to @target@ and skip @action@. Otherwise run @action@
@@ -207,7 +210,19 @@ linkCacheDir = do
 hashInput :: FilePath -> IO (FilePath, String)
 hashInput path = do
   bytes <- BS.readFile path
-  return (takeFileName path, showMD5 (md5 bytes))
+  return (takeFileName path, xxh64Hex bytes)
+
+-- | XXH64 of the input bytes, rendered as a zero-padded 16-char hex
+-- string. Roughly 5-10x faster than MD5 on modern CPUs, which is what
+-- the cold-cache cost on a large dep cone is bottlenecked on. Not
+-- cryptographically collision-resistant -- the cache is a trust-the-
+-- user-not-an-attacker artefact anyway, and MD5 wouldn't be any
+-- better in an adversarial scenario.
+xxh64Hex :: BS.ByteString -> String
+xxh64Hex bs =
+  let h = XXH.xxh64 bs 0
+      raw = showHex h ""
+  in replicate (16 - length raw) '0' ++ raw
 
 -- | Run @action@ over each input concurrently, with at most
 -- @max 4 numCapabilities@ workers in flight. Order of results matches
@@ -260,7 +275,7 @@ hashInputCached indexRef dirtyRef indexPath path = do
       return (takeFileName path, h)
     _ -> do
       bytes <- BS.readFile path
-      let h = showMD5 (md5 bytes)
+      let h = xxh64Hex bytes
       modifyIORef' indexRef (fmap (Map.insert path (size, mtimeStr, h)))
       writeIORef dirtyRef True
       return (takeFileName path, h)
