@@ -11,6 +11,11 @@ module Distribution.Simple.GHC.LinkManifest
 import Distribution.Compat.Prelude
 import Prelude ()
 
+import Control.Concurrent (forkIO, getNumCapabilities)
+import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
+import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
+import Control.Exception (bracket_, throwIO, try)
+import Control.Monad (forM, forM_)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
@@ -142,7 +147,12 @@ cachedLinkUnsafe verbosity target tool inputs action = do
   let hashOne p
         | useStat = hashInputCached indexRef dirtyRef indexPath p
         | otherwise = hashInput p
-  inputDigests <- traverse hashOne inputs
+  -- The first link of a session (or after `cabal clean`) hashes every
+  -- input from scratch. For projects with hundreds of MB of object
+  -- files this is the dominant cost on a cold cache. Hash inputs in
+  -- parallel; the stat short-circuit path is essentially free even
+  -- serial, but the cold-read path overlaps disk I/O usefully.
+  inputDigests <- traverseConcurrentlyBounded hashOne inputs
   when useStat $ flushStatIndex indexRef dirtyRef indexPath
   let key = computeKey (takeFileName target) tool inputDigests
   let blobPath = cacheDir </> key <> ".blob"
@@ -185,6 +195,29 @@ hashInput :: FilePath -> IO (FilePath, String)
 hashInput path = do
   bytes <- BS.readFile path
   return (takeFileName path, showMD5 (md5 bytes))
+
+-- | Run @action@ over each input concurrently, with at most
+-- @max 4 numCapabilities@ workers in flight. Order of results matches
+-- the input list. Exceptions in workers are rethrown in the caller.
+--
+-- Lib:Cabal builds may not have the threaded RTS, but 'forkIO' still
+-- yields concurrent interleaving for I/O-bound work — and hashing
+-- 100 object files is overwhelmingly I/O-bound.
+traverseConcurrentlyBounded :: (a -> IO b) -> [a] -> IO [b]
+traverseConcurrentlyBounded f xs = do
+  caps <- getNumCapabilities
+  let cap = max 4 caps
+  sem <- newQSem cap
+  slots <- traverse (\_ -> newEmptyMVar) xs
+  forM_ (zip slots xs) $ \(slot, x) ->
+    forkIO $ do
+      r <- trySome (bracket_ (waitQSem sem) (signalQSem sem) (f x))
+      putMVar slot r
+  forM slots $ \slot ->
+    takeMVar slot >>= either throwIO pure
+
+trySome :: IO a -> IO (Either SomeException a)
+trySome = try
 
 -- | Like 'hashInput', but consults a @(size, mtime)@-keyed sidecar
 -- index first. On a stat match the recorded MD5 is reused and the
