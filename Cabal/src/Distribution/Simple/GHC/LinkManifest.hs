@@ -165,9 +165,21 @@ cachedLinkUnsafe verbosity target tool inputs action = do
         Just s | not (null s) ->
           verifyHit verbosity tool target action blobPath cacheDir key
         _ -> do
-          noticeNoWrap verbosity $
-            "[link-cache] HIT (" <> tool <> ") " <> target <> "\n"
-          atomicCopy blobPath target
+          -- Common case on repeated builds: target on disk is already
+          -- byte-equal to the blob (the stamp sidecar records which
+          -- cache key the target was last populated from). Skip the
+          -- atomicCopy entirely -- for a 20MB executable that is the
+          -- difference between a 50ms cache hit and a sub-millisecond
+          -- one.
+          alreadyCorrect <- targetMatchesStamp target key
+          if alreadyCorrect
+            then info verbosity $
+              "[link-cache] HIT-NOCOPY (" <> tool <> ") " <> target
+            else do
+              noticeNoWrap verbosity $
+                "[link-cache] HIT (" <> tool <> ") " <> target <> "\n"
+              atomicCopy blobPath target
+              writeStampSilently target key
           -- Bump mtime so the GC's LRU eviction order reflects use,
           -- not just write time. Best-effort: ignore failure.
           touchSilently blobPath
@@ -179,6 +191,7 @@ cachedLinkUnsafe verbosity target tool inputs action = do
       when produced $ do
         atomicCopy target blobPath
         writeManifest manifestPath tool target inputDigests
+        writeStampSilently target key
         enforceSizeCap verbosity cacheDir
       return StatsMiss
 
@@ -380,6 +393,37 @@ removeIfExists :: FilePath -> IO ()
 removeIfExists p = do
   exists <- doesFileExist p
   when exists (removeFile p)
+
+-- | Sidecar file recording which cache key @target@ was last populated
+-- from. The presence of @<target>.link-cache-stamp@ containing the
+-- current key means @target@ is already byte-equal to the blob, so
+-- the atomicCopy on HIT can be skipped.
+stampPath :: FilePath -> FilePath
+stampPath target = target <> ".link-cache-stamp"
+
+writeStampSilently :: FilePath -> String -> IO ()
+writeStampSilently target key =
+  atomicWriteBytes (stampPath target) (BS8.pack key) `catch` ignoreIO
+  where
+    ignoreIO :: IOException -> IO ()
+    ignoreIO _ = return ()
+
+targetMatchesStamp :: FilePath -> String -> IO Bool
+targetMatchesStamp target key = do
+  targetExists <- doesFileExist target
+  if not targetExists
+    then return False
+    else do
+      let p = stampPath target
+      stampExists <- doesFileExist p
+      if not stampExists
+        then return False
+        else do
+          recorded <- (Just . BS8.unpack <$> BS.readFile p) `catch` orNothing
+          return (recorded == Just key)
+  where
+    orNothing :: IOException -> IO (Maybe String)
+    orNothing _ = return Nothing
 
 -- | Append a JSONL line summarising one cache invocation. Best-effort:
 -- any IOException is swallowed so telemetry never breaks a build.
