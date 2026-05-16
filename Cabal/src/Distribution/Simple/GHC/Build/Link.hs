@@ -10,6 +10,7 @@ import Prelude ()
 import Control.Monad
 import Control.Monad.IO.Class
 import qualified Data.ByteString.Lazy.Char8 as BS
+import Data.List (isInfixOf)
 import qualified Data.Set as Set
 import Distribution.Backpack
 import Distribution.Compat.Binary (encode)
@@ -29,6 +30,7 @@ import Distribution.Simple.GHC.Build.Modules
 import Distribution.Simple.GHC.Build.Utils (exeTargetName, flibBuildName, flibTargetName, withDynFLib)
 import Distribution.Simple.GHC.ImplInfo
 import qualified Distribution.Simple.GHC.Internal as Internal
+import Distribution.Simple.GHC.LinkManifest (withSkippableLink)
 import Distribution.Simple.LocalBuildInfo
 import qualified Distribution.Simple.PackageIndex as PackageIndex
 import Distribution.Simple.Program
@@ -49,12 +51,15 @@ import Distribution.Version
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
+  , doesFileExist
+  , listDirectory
   , renameFile
   )
 import System.FilePath
   ( isRelative
   , replaceExtension
   )
+import qualified System.FilePath as FP
 
 -- | Links together the object files of the Haskell modules and extra sources
 -- using the context in which the component is being built.
@@ -220,7 +225,7 @@ linkOrLoadComponent
               info verbosity "Linking..."
               let linkExeLike name = do
                     rpaths <- get_rpaths (Set.singleton wantedExeWay)
-                    linkExecutable (linkerOpts rpaths) (wantedExeWay, buildOpts) targetDir name runGhcProg lbi
+                    linkExecutable verbosity (linkerOpts rpaths) (wantedExeWay, buildOpts) targetDir name runGhcProg lbi
               case component of
                 CLib lib -> do
                   let libWays = wantedLibWays isIndef
@@ -229,7 +234,7 @@ linkOrLoadComponent
                 CFLib flib -> do
                   let flib_way = wantedFLibWay (withDynFLib flib)
                   rpaths <- get_rpaths (Set.singleton flib_way)
-                  linkFLib flib bi lbi (linkerOpts rpaths) (flib_way, buildOpts) targetDir runGhcProg
+                  linkFLib verbosity flib bi lbi (linkerOpts rpaths) (flib_way, buildOpts) targetDir runGhcProg
                 CExe exe -> linkExeLike (exeName exe)
                 CTest test -> linkExeLike (testName test)
                 CBench bench -> linkExeLike (benchmarkName bench)
@@ -255,6 +260,7 @@ linkLibrary
   -> IO ()
 linkLibrary buildTargetDir cleanedExtraLibDirs verbosity runGhcProg lib lbi clbi extraSources rpaths wantedWays = do
   let
+    i = interpretSymbolicPathLBI lbi
     compiler_id = compilerId comp
     comp = compiler lbi
     implInfo = getImplInfo comp
@@ -387,44 +393,54 @@ linkLibrary buildTargetDir cleanedExtraLibDirs verbosity runGhcProg lib lbi clbi
 
   -- See doc/internal/bytecode-libraries.md for how the chosen companion
   -- way determines which .gbc files get packed into the .bytecodelib.
+  -- See Note [Link manifest cache] at the bottom of this module.
   let
     linkWay = \case
       ProfWay -> do
-        Ar.createArLibArchive verbosity lbi profileLibFilePath profObjectFiles
+        withSkippableLink verbosity (i profileLibFilePath) "ar-prof" (map i profObjectFiles) $
+          Ar.createArLibArchive verbosity lbi profileLibFilePath profObjectFiles
         when (withGHCiLib lbi) $ do
           (ldProg, _) <- requireProgram verbosity ldProgram (withPrograms lbi)
-          Ld.combineObjectFiles
-            verbosity
-            lbi
-            ldProg
-            ghciProfLibFilePath
-            profObjectFiles
-      ProfDynWay -> do
-        runGhcProg $ ghcProfSharedLinkArgs profDynamicObjectFiles
-      DynWay -> do
-        runGhcProg $ ghcSharedLinkArgs dynamicObjectFiles
-        -- The .gbc files were built with DynWay if both are enabled.
-        when (withBytecodeLib lbi) $ do
-          bytecodeObjectFiles <- getObjBytecodeWayFiles DynWay
-          runGhcProg $ ghcBytecodeLinkArgs bytecodeObjectFiles
-      StaticWay -> do
-        when (withVanillaLib lbi) $ do
-          Ar.createArLibArchive verbosity lbi vanillaLibFilePath staticObjectFiles
-          when (withGHCiLib lbi) $ do
-            (ldProg, _) <- requireProgram verbosity ldProgram (withPrograms lbi)
+          withSkippableLink verbosity (i ghciProfLibFilePath) "ld-ghci-prof" (map i profObjectFiles) $
             Ld.combineObjectFiles
               verbosity
               lbi
               ldProg
-              ghciLibFilePath
-              staticObjectFiles
+              ghciProfLibFilePath
+              profObjectFiles
+      ProfDynWay -> do
+        withSkippableLink verbosity (i profSharedLibFilePath) "ghc-shared-prof" (map i profDynamicObjectFiles) $
+          runGhcProg $ ghcProfSharedLinkArgs profDynamicObjectFiles
+      DynWay -> do
+        withSkippableLink verbosity (i sharedLibFilePath) "ghc-shared" (map i dynamicObjectFiles) $
+          runGhcProg $ ghcSharedLinkArgs dynamicObjectFiles
+        -- The .gbc files were built with DynWay if both are enabled.
+        when (withBytecodeLib lbi) $ do
+          bytecodeObjectFiles <- getObjBytecodeWayFiles DynWay
+          withSkippableLink verbosity (i bytecodeLibFilePath) "ghc-bytecode-dyn" (map i bytecodeObjectFiles) $
+            runGhcProg $ ghcBytecodeLinkArgs bytecodeObjectFiles
+      StaticWay -> do
+        when (withVanillaLib lbi) $ do
+          withSkippableLink verbosity (i vanillaLibFilePath) "ar-static" (map i staticObjectFiles) $
+            Ar.createArLibArchive verbosity lbi vanillaLibFilePath staticObjectFiles
+          when (withGHCiLib lbi) $ do
+            (ldProg, _) <- requireProgram verbosity ldProgram (withPrograms lbi)
+            withSkippableLink verbosity (i ghciLibFilePath) "ld-ghci" (map i staticObjectFiles) $
+              Ld.combineObjectFiles
+                verbosity
+                lbi
+                ldProg
+                ghciLibFilePath
+                staticObjectFiles
         when (withStaticLib lbi) $ do
-          runGhcProg $ ghcStaticLinkArgs staticObjectFiles
+          withSkippableLink verbosity (i staticLibFilePath) "ghc-staticlib" (map i staticObjectFiles) $
+            runGhcProg $ ghcStaticLinkArgs staticObjectFiles
         -- The .gbc files were built with `DynWay` if `DynWay` is enabled. Otherwise (this case),
         -- the files are produced alongside `StaticWay`.
         when (withBytecodeLib lbi && (DynWay `notElem` wantedWays)) $ do
           bytecodeObjectFiles <- getObjBytecodeWayFiles StaticWay
-          runGhcProg $ ghcBytecodeLinkArgs bytecodeObjectFiles
+          withSkippableLink verbosity (i bytecodeLibFilePath) "ghc-bytecode-static" (map i bytecodeObjectFiles) $
+            runGhcProg $ ghcBytecodeLinkArgs bytecodeObjectFiles
 
   -- ROMES: Why exactly branch on staticObjectFiles, rather than any other build
   -- kind that we might have wanted instead?
@@ -445,7 +461,9 @@ linkLibrary buildTargetDir cleanedExtraLibDirs verbosity runGhcProg lib lbi clbi
 -- | Link the executable resulting from building this component, be it an
 -- executable, test, or benchmark component.
 linkExecutable
-  :: (GhcOptions)
+  :: Verbosity
+  -- ^ Verbosity used by the link-output cache for HIT/MISS log lines.
+  -> (GhcOptions)
   -- ^ The linker-specific GHC options
   -> (BuildWay, BuildWay -> GhcOptions)
   -- ^ The wanted build ways and corresponding GhcOptions that were
@@ -459,7 +477,7 @@ linkExecutable
   -- ^ Run the configured GHC program
   -> LocalBuildInfo
   -> IO ()
-linkExecutable linkerOpts (way, buildOpts) targetDir targetName runGhcProg lbi = do
+linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhcProg lbi = do
   let baseOpts = buildOpts way
       linkOpts =
         baseOpts
@@ -469,16 +487,24 @@ linkExecutable linkerOpts (way, buildOpts) targetDir targetName runGhcProg lbi =
               -- assume there is a main function in another non-haskell object
               ghcOptLinkNoHsMain = toFlag (ghcOptInputFiles baseOpts == mempty && ghcOptInputScripts baseOpts == mempty)
             }
+      i = interpretSymbolicPathLBI lbi
 
   -- Work around old GHCs not relinking in this
   -- situation, see #3294
   let target =
         targetDir </> makeRelativePathEx (exeTargetName (hostPlatform lbi) targetName)
-  runGhcProg linkOpts{ghcOptOutputFile = toFlag target}
+      linkSrcs = map i (fromNubListR (ghcOptInputFiles linkOpts))
+  -- See Note [Link manifest cache] for why exe link needs the dep
+  -- archives included in the cache key alongside ghcOptInputFiles.
+  depArchives <- linkDepArchives lbi (i target) linkOpts
+  withSkippableLink verbosity (i target) "ghc-link-exe" (linkSrcs ++ depArchives) $
+    runGhcProg linkOpts{ghcOptOutputFile = toFlag target}
 
 -- | Link a foreign library component
 linkFLib
-  :: ForeignLib
+  :: Verbosity
+  -- ^ Verbosity used by the link-output cache for HIT/MISS log lines.
+  -> ForeignLib
   -> BuildInfo
   -> LocalBuildInfo
   -> (GhcOptions)
@@ -492,7 +518,7 @@ linkFLib
   -> (GhcOptions -> IO ())
   -- ^ Run the configured GHC program
   -> IO ()
-linkFLib flib bi lbi linkerOpts (way, buildOpts) targetDir runGhcProg = do
+linkFLib verbosity flib bi lbi linkerOpts (way, buildOpts) targetDir runGhcProg = do
   let
     comp = compiler lbi
 
@@ -548,8 +574,10 @@ linkFLib flib bi lbi linkerOpts (way, buildOpts) targetDir runGhcProg = do
   -- @flibBuildName@.
   let buildName = flibBuildName lbi flib
   let outFile = targetDir </> makeRelativePathEx buildName
-  runGhcProg linkOpts{ghcOptOutputFile = toFlag outFile}
   let i = interpretSymbolicPathLBI lbi
+      flibInputs = map i (fromNubListR (ghcOptInputFiles linkOpts))
+  withSkippableLink verbosity (i outFile) "ghc-link-flib" flibInputs $
+    runGhcProg linkOpts{ghcOptOutputFile = toFlag outFile}
   renameFile (i outFile) (i targetDir </> flibTargetName lbi flib)
 
 -- | Calculate the RPATHs for the component we are building.
@@ -769,3 +797,115 @@ replNoLoad :: Ord a => ReplOptions -> NubListR a -> NubListR a
 replNoLoad replFlags l
   | replOptionsNoLoad replFlags == Flag True = mempty
   | otherwise = l
+
+{- Note [Link manifest cache]
+
+The link calls in this module ('Ar.createArLibArchive',
+'Ld.combineObjectFiles', and the various 'runGhcProg' invocations
+producing '.so'/'.a' archives, bytecode libs, foreign libs, and
+executables) are wrapped in 'withSkippableLink' from
+"Distribution.Simple.GHC.LinkManifest". The wrapper hashes the byte
+content of the link inputs together with a tool identifier and the
+target's basename; on a hit, the prior output is byte-copied from
+@$XDG_CACHE_HOME/cabal/link-cache/@ and the linker is skipped
+entirely.
+
+Why each tool is safe:
+
+* 'ar' is forced byte-stable by 'Distribution.Simple.Program.Ar.wipeMetadata',
+  which scrubs timestamps and uids from archive members.
+* 'ghc -shared' / 'ghc -staticlib' / 'ghc -bytecodelib' are deterministic
+  on a given toolchain when the input object files are byte-equal.
+* 'ghc -o' for executables emits an RPATH derived from the output path
+  and a '--build-id' hash of inputs. Both are stable when the inputs
+  are stable. For executables we additionally include the dep package
+  '.a'/'.so' files (resolved by 'linkDepArchives') so that a
+  same-package lib edit busts the exe's cache key even though
+  'Main.hs' itself is unchanged.
+
+The cache key is @(tool identifier, target basename, sorted input
+digests)@. The target's directory is intentionally absent: two
+checkouts of the same project share cached outputs. RPATHs in cabal
+are written as @\$ORIGIN@/@\@loader_path@-relative paths (see
+'getRPaths'), so the link output is byte-identical between such
+checkouts.
+
+Env vars (see 'Distribution.Simple.GHC.LinkManifest' for the
+authoritative list):
+
+* @CABAL_LINK_CACHE_DISABLE=1@ — bypass entirely (no read, no write).
+* @CABAL_LINK_CACHE_DIR=\/path@ — override the cache root.
+* @CABAL_LINK_CACHE_MAX_BYTES=N@ — size cap (default 5 GiB). On a
+  miss-with-write the oldest blobs are evicted until under cap.
+-}
+
+-- | Resolve the on-disk paths of dep-package archives ghc will pull in
+-- via @-package-id@, for use as link-cache key inputs for the
+-- executable link step. Three search strategies, results deduped:
+--
+--   1. Look up registered installed-package index ('installedPkgs'
+--      lbi) — catches globally registered deps.
+--   2. Glob the @-L@ search paths in 'ghcOptLinkLibPath' for files
+--      named @libHS*<unit-id>*.{a,so,dylib}@.
+--   3. Recursively walk a directory derived from the target
+--      executable path (climbing several levels above
+--      @<distdir>/<pkg>/x/<exe>/build/<exe>@) looking for the same
+--      filename pattern. Catches in-tree library components that
+--      have just been built but won't appear in the installed-package
+--      index until after the exe is linked.
+--
+-- Best-effort: missing files are silently dropped (a missing dep
+-- archive becomes a ghc link error before the cache layer ever
+-- cares).
+--
+-- See @Note [Link manifest cache]@.
+linkDepArchives :: LocalBuildInfo -> FilePath -> GhcOptions -> IO [FilePath]
+linkDepArchives lbi targetPath linkOpts = do
+  let i = interpretSymbolicPathLBI lbi
+      pkgIdx = installedPkgs lbi
+      uids = [uid | (uid, _) <- fromNubListR (ghcOptPackages linkOpts)]
+      libSearchDirs = map i (fromNubListR (ghcOptLinkLibPath linkOpts))
+      ghcVerSuffix = "-ghc" ++ prettyShow (compilerVersion (compiler lbi))
+      libExts = [".a", ghcVerSuffix ++ ".so", ghcVerSuffix ++ ".dylib", ".so", ".dylib"]
+      uidStrings = [prettyShow (unDefUnitId d) | DefiniteUnitId d <- uids]
+      ipiPaths =
+        [ d FP.</> ("libHS" ++ hsLib ++ ext)
+        | DefiniteUnitId duid <- uids
+        , Just ipi <- [PackageIndex.lookupUnitId pkgIdx (unDefUnitId duid)]
+        , d <- IPI.libraryDirs ipi ++ IPI.libraryDirsStatic ipi
+        , hsLib <- IPI.hsLibraries ipi
+        , ext <- libExts
+        ]
+      searchRoot = iterate FP.takeDirectory targetPath !! 5
+  searchedFromLibs <- concat <$> traverse (listMatching uidStrings libExts) libSearchDirs
+  searchedFromBuild <- walkMatching uidStrings libExts searchRoot
+  filterM doesFileExist (nub (ipiPaths ++ searchedFromLibs ++ searchedFromBuild))
+  where
+    isHSLib uidStrings libExts n =
+      "libHS" `isPrefixOf` n
+        && any (`isInfixOf` n) uidStrings
+        && any (`isSuffixOf` n) libExts
+
+    listMatching uidStrings libExts dir = do
+      exists <- doesDirectoryExist dir
+      if not exists
+        then return []
+        else do
+          names <- listDirectory dir
+          return [dir FP.</> n | n <- names, isHSLib uidStrings libExts n]
+
+    walkMatching uidStrings libExts root = do
+      exists <- doesDirectoryExist root
+      if not exists
+        then return []
+        else do
+          names <- listDirectory root
+          fmap concat $ for names $ \n -> do
+            let p = root FP.</> n
+            isDir <- doesDirectoryExist p
+            if isDir
+              then walkMatching uidStrings libExts p
+              else
+                if isHSLib uidStrings libExts n
+                  then return [p]
+                  else return []
