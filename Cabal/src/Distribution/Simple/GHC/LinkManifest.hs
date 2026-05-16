@@ -300,14 +300,22 @@ flushStatIndex indexRef dirtyRef path = do
       Just ix -> writeStatIndex path ix
       Nothing -> return ()
 
+-- | Write the in-memory index back to disk. Concurrent cabal-install
+-- processes pointed at the same cache may have updated the file
+-- between our load and our flush; we re-read here and 'Map.union'
+-- with our updates so we don't silently clobber peer writes. Our
+-- entries win on conflict because we just verified them, so the
+-- recorded hash is up to date for any path we touched.
 writeStatIndex :: FilePath -> StatIndex -> IO ()
-writeStatIndex path ix = atomicWriteBytes path (BS8.pack body)
-  where
-    body =
-      unlines
-        [ pth <> "\t" <> show sz <> "\t" <> mt <> "\t" <> h
-        | (pth, (sz, mt, h)) <- Map.toAscList ix
-        ]
+writeStatIndex path ours = do
+  onDisk <- readStatIndex path
+  let merged = Map.union ours onDisk
+      body =
+        unlines
+          [ pth <> "\t" <> show sz <> "\t" <> mt <> "\t" <> h
+          | (pth, (sz, mt, h)) <- Map.toAscList merged
+          ]
+  atomicWriteBytes path (BS8.pack body)
 
 -- | Key is @(tool, target basename, sorted input digests)@. The target's
 -- *directory* is intentionally absent: two checkouts of the same project
@@ -460,6 +468,7 @@ appendStats target tool outcome inputs t0 t1 = do
       cacheDir <- linkCacheDir
       createDirectoryIfMissing True cacheDir
       let statsPath = cacheDir </> ".stats.jsonl"
+      rotateIfLarge statsPath
       totalBytes <- sumInputBytesSilently inputs
       let ts = realToFrac (utcTimeToPOSIXSeconds t0) :: Double
           ms = realToFrac (diffUTCTime t1 t0) * 1000 :: Double
@@ -478,6 +487,21 @@ appendStats target tool outcome inputs t0 t1 = do
       withFile statsPath AppendMode $ \h -> do
         hSetBuffering h NoBuffering
         hPutStr h line
+
+-- | If @path@ is larger than the rotation threshold (10 MiB), move it
+-- to @path.1@ (overwriting any prior rotation) and start fresh. Keeps
+-- long-lived developer machines from accumulating an unbounded
+-- @.stats.jsonl@.
+rotateIfLarge :: FilePath -> IO ()
+rotateIfLarge path = do
+  exists <- doesFileExist path
+  when exists $ do
+    sz <- getFileSize path
+    when (sz > rotateThreshold) $ do
+      removeIfExists (path <> ".1")
+      renameFile path (path <> ".1")
+  where
+    rotateThreshold = 10 * 1024 * 1024
 
 sumInputBytesSilently :: [FilePath] -> IO Integer
 sumInputBytesSilently = fmap sum . traverse oneSize
@@ -529,8 +553,12 @@ verifyHit verbosity tool target action blobPath cacheDir key = do
       freshBytes <- BS.readFile target
       if blobBytes == freshBytes
         then do
-          noticeNoWrap verbosity $
-            "[link-cache] HIT-VERIFIED (" <> tool <> ") " <> target <> "\n"
+          -- Verify mode is typically left on for a whole CI run, so
+          -- every link emits HIT-VERIFIED. That makes notice-level
+          -- output spammy with no signal. The interesting event is
+          -- HIT-DIVERGED, which stays at notice.
+          info verbosity $
+            "[link-cache] HIT-VERIFIED (" <> tool <> ") " <> target
           touchSilently blobPath
           return StatsHitVerified
         else do
