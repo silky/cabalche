@@ -37,6 +37,7 @@
       cabalSrc              = cleanPkgSrc "Cabal"                ./Cabal;
       cabalInstallSolverSrc = cleanPkgSrc "cabal-install-solver" ./cabal-install-solver;
       cabalInstallSrc       = cleanPkgSrc "cabal-install"        ./cabal-install;
+      hooksExeSrc           = cleanPkgSrc "hooks-exe"            ./hooks-exe;
 
       # We deliberately do NOT override `Cabal` and `Cabal-syntax` in
       # the haskellPackages set. lib:Cabal is in essentially every
@@ -64,10 +65,23 @@
               ${ghcAttr} = prev.haskell.packages.${ghcAttr}.extend
                 (hself: hprev:
                   let
-                    patchedCabalSyntax = hself.callCabal2nix "Cabal-syntax"
-                      cabalSyntaxSrc { };
-                    patchedCabal = hself.callCabal2nix "Cabal"
-                      cabalSrc { Cabal-syntax = patchedCabalSyntax; };
+                    # Jailbreak patched Cabal/Cabal-syntax so their own
+                    # process/binary/etc. upper bounds don't fight
+                    # nixpkgs-unstable's newer versions.
+                    patchedCabalSyntax = hslib.doJailbreak
+                      (hself.callCabal2nix "Cabal-syntax" cabalSyntaxSrc { });
+                    patchedCabal = hslib.doJailbreak
+                      (hself.callCabal2nix "Cabal"
+                        cabalSrc { Cabal-syntax = patchedCabalSyntax; });
+                    # hooks-exe is an in-tree sibling on master; rebuild
+                    # against the patched Cabal/Cabal-syntax so package
+                    # IDs match what cabal-install links against.
+                    patchedHooksExe = hslib.doJailbreak
+                      (hself.callCabal2nix "hooks-exe"
+                        hooksExeSrc {
+                          Cabal        = patchedCabal;
+                          Cabal-syntax = patchedCabalSyntax;
+                        });
                     # Any transitive dep of cabal-install that uses
                     # Cabal-syntax in its public API must rebuild
                     # against the patched Cabal-syntax -- otherwise
@@ -93,9 +107,11 @@
                         cabalInstallSrc {
                           Cabal-syntax     = patchedCabalSyntax;
                           Cabal            = patchedCabal;
+                          hooks-exe        = patchedHooksExe;
                           Cabal-described  = null;
                           Cabal-QuickCheck = null;
                           Cabal-tree-diff  = null;
+                          Cabal-tests      = null;
                           tree-diff        = null;
                         });
                   });
