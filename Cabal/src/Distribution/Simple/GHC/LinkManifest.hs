@@ -27,9 +27,10 @@ import System.Directory
   , renameFile
   , setModificationTime
   )
+import Data.Time.Clock (UTCTime, diffUTCTime)
 import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, takeDirectory, takeFileName, (</>))
-import System.IO (hClose, openBinaryTempFile)
+import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryTempFile, withFile)
 
 import Distribution.Simple.Utils (info, noticeNoWrap)
 import Distribution.Utils.MD5 (md5, showMD5)
@@ -64,6 +65,8 @@ statIndexName = ".stat-index.v1"
 --   we evict oldest entries until under the cap (default 5 GiB).
 -- * @CABAL_LINK_CACHE_NO_STAT=1@ disables the stat-based short-circuit
 --   on input hashing (forces a full read+MD5 of every input file).
+-- * @CABAL_LINK_CACHE_NO_STATS=1@ disables the per-link telemetry append
+--   to @.stats.jsonl@ under the cache root.
 withSkippableLink
   :: Verbosity
   -> FilePath
@@ -83,19 +86,32 @@ withSkippableLink verbosity target tool inputs action = do
     Just s | not (null s) -> action
     _ -> cachedLink verbosity target tool inputs action
 
+-- | Outcome of a single 'cachedLink' invocation, used for telemetry.
+data StatsOutcome = StatsHit | StatsMiss | StatsDisabled
+
+outcomeWord :: StatsOutcome -> String
+outcomeWord StatsHit = "hit"
+outcomeWord StatsMiss = "miss"
+outcomeWord StatsDisabled = "disabled"
+
 -- | Wrap the cache logic so any IOError (no writable @$XDG_CACHE_HOME@
 -- — e.g. nix sandbox sets @HOME=/homeless-shelter@; read-only home;
 -- disk full) downgrades to a plain @action@ run. The cache is a
 -- correctness-preserving optimisation; failing soft is the right
 -- default for a build-tool patch.
 cachedLink :: Verbosity -> FilePath -> String -> [FilePath] -> IO () -> IO ()
-cachedLink verbosity target tool inputs action =
-  cachedLinkUnsafe verbosity target tool inputs action `catch` \e -> do
-    info verbosity $
-      "[link-cache] DISABLED (" <> tool <> "): " <> show (e :: IOException)
-    action
+cachedLink verbosity target tool inputs action = do
+  t0 <- getCurrentTime
+  outcome <-
+    cachedLinkUnsafe verbosity target tool inputs action `catch` \e -> do
+      info verbosity $
+        "[link-cache] DISABLED (" <> tool <> "): " <> show (e :: IOException)
+      action
+      return StatsDisabled
+  t1 <- getCurrentTime
+  appendStatsSilently target tool outcome inputs t0 t1
 
-cachedLinkUnsafe :: Verbosity -> FilePath -> String -> [FilePath] -> IO () -> IO ()
+cachedLinkUnsafe :: Verbosity -> FilePath -> String -> [FilePath] -> IO () -> IO StatsOutcome
 cachedLinkUnsafe verbosity target tool inputs action = do
   cacheDir <- linkCacheDir
   createDirectoryIfMissing True cacheDir
@@ -123,6 +139,7 @@ cachedLinkUnsafe verbosity target tool inputs action = do
       -- Bump mtime so the GC's LRU eviction order reflects use, not just
       -- write time. Best-effort: ignore failure.
       touchSilently blobPath
+      return StatsHit
     else do
       info verbosity $ "[link-cache] MISS (" <> tool <> ") " <> target
       action
@@ -131,6 +148,7 @@ cachedLinkUnsafe verbosity target tool inputs action = do
         atomicCopy target blobPath
         writeManifest manifestPath tool target inputDigests
         enforceSizeCap verbosity cacheDir
+      return StatsMiss
 
 linkCacheDir :: IO FilePath
 linkCacheDir = do
@@ -307,3 +325,76 @@ removeIfExists :: FilePath -> IO ()
 removeIfExists p = do
   exists <- doesFileExist p
   when exists (removeFile p)
+
+-- | Append a JSONL line summarising one cache invocation. Best-effort:
+-- any IOException is swallowed so telemetry never breaks a build.
+-- Disabled by @CABAL_LINK_CACHE_NO_STATS=1@. Each record looks like:
+--
+-- > {"ts":1700000000.0,"tool":"ar-static","target":"...","outcome":"hit","input_bytes":12345,"ms":42}
+appendStatsSilently
+  :: FilePath
+  -> String
+  -> StatsOutcome
+  -> [FilePath]
+  -> UTCTime
+  -> UTCTime
+  -> IO ()
+appendStatsSilently target tool outcome inputs t0 t1 =
+  appendStats target tool outcome inputs t0 t1 `catch` ignoreIO
+  where
+    ignoreIO :: IOException -> IO ()
+    ignoreIO _ = return ()
+
+appendStats
+  :: FilePath
+  -> String
+  -> StatsOutcome
+  -> [FilePath]
+  -> UTCTime
+  -> UTCTime
+  -> IO ()
+appendStats target tool outcome inputs t0 t1 = do
+  disabled <- lookupEnv "CABAL_LINK_CACHE_NO_STATS"
+  case disabled of
+    Just s | not (null s) -> return ()
+    _ -> do
+      cacheDir <- linkCacheDir
+      createDirectoryIfMissing True cacheDir
+      let statsPath = cacheDir </> ".stats.jsonl"
+      totalBytes <- sumInputBytesSilently inputs
+      let ts = realToFrac (utcTimeToPOSIXSeconds t0) :: Double
+          ms = realToFrac (diffUTCTime t1 t0) * 1000 :: Double
+          line =
+            "{"
+              <> "\"ts\":" <> show ts
+              <> ",\"tool\":" <> jsonStr tool
+              <> ",\"target\":" <> jsonStr target
+              <> ",\"outcome\":" <> jsonStr (outcomeWord outcome)
+              <> ",\"input_bytes\":" <> show totalBytes
+              <> ",\"ms\":" <> show (round ms :: Integer)
+              <> "}\n"
+      -- O_APPEND is atomic for writes under PIPE_BUF on POSIX; each
+      -- record is well under that, so concurrent builds writing to
+      -- the same stats file will not interleave individual records.
+      withFile statsPath AppendMode $ \h -> do
+        hSetBuffering h NoBuffering
+        hPutStr h line
+
+sumInputBytesSilently :: [FilePath] -> IO Integer
+sumInputBytesSilently = fmap sum . traverse oneSize
+  where
+    oneSize :: FilePath -> IO Integer
+    oneSize p = getFileSize p `catch` \(_ :: IOException) -> return 0
+
+-- | Minimal JSON string escaping: enough for the tool identifiers and
+-- file paths we emit. ASCII control chars beyond \\t\\r\\n are not
+-- expected on these paths.
+jsonStr :: String -> String
+jsonStr s = '"' : concatMap esc s ++ "\""
+  where
+    esc '"' = "\\\""
+    esc '\\' = "\\\\"
+    esc '\n' = "\\n"
+    esc '\r' = "\\r"
+    esc '\t' = "\\t"
+    esc c = [c]
