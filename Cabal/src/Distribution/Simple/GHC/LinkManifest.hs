@@ -189,10 +189,13 @@ cachedLinkUnsafe verbosity target tool inputs action = do
           -- atomicCopy entirely -- for a 20MB executable that is the
           -- difference between a 50ms cache hit and a sub-millisecond
           -- one.
+          --
+          -- Both branches log at notice level so the user sees the
+          -- cache acting on every build, not just with -v.
           alreadyCorrect <- targetMatchesStamp target key
           if alreadyCorrect
-            then info verbosity $
-              "[link-cache] HIT-NOCOPY (" <> tool <> ") " <> target
+            then noticeNoWrap verbosity $
+              "[link-cache] HIT (already-current) (" <> tool <> ") " <> target <> "\n"
             else do
               noticeNoWrap verbosity $
                 "[link-cache] HIT (" <> tool <> ") " <> target <> "\n"
@@ -203,7 +206,11 @@ cachedLinkUnsafe verbosity target tool inputs action = do
           touchSilently blobPath
           return StatsHit
     else do
-      info verbosity $ "[link-cache] MISS (" <> tool <> ") " <> target
+      -- Notice level: a MISS is "cache is populating" -- the user
+      -- wants to see that the cache is engaged even when this build
+      -- doesn't benefit (the next one will).
+      noticeNoWrap verbosity $
+        "[link-cache] MISS (" <> tool <> ") " <> target <> "\n"
       action
       produced <- doesFileExist target
       when produced $ do
