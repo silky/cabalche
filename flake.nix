@@ -77,8 +77,28 @@
                         Cabal        = patchedCabal;
                         Cabal-syntax = patchedCabalSyntax;
                       };
+
+                    # cabal-install master needs semaphore-compat >=
+                    # 2.0.0 for the new ClientSemaphore /
+                    # SemaphoreIdentifier types in jobsem-driven
+                    # parallel builds. GHC 9.8.x bundles 1.0.0 and
+                    # nixpkgs's `semaphore-compat = null` policy
+                    # passes the bundled version through, so without
+                    # this override the build fails with
+                    # "Not in scope: type constructor ClientSemaphore"
+                    # in Distribution.Client.JobControl.
+                    semaphoreCompat2 = hself.callHackageDirect
+                      {
+                        pkg = "semaphore-compat";
+                        ver = "2.0.0";
+                        sha256 = "06j0xf055izg98i1pm0l1hzbkapy4kyrz5lpyl4y8iq5l6sq1d5k";
+                      } { };
                   in
                   {
+                    # Make the upgraded semaphore-compat the default
+                    # in this set so anything that callPackage-resolves
+                    # `semaphore-compat` picks up 2.0.0.
+                    semaphore-compat = semaphoreCompat2;
                     # Any transitive dep of cabal-install that uses
                     # Cabal-syntax in its public API must rebuild
                     # against the patched Cabal-syntax -- otherwise
