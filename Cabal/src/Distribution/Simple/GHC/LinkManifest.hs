@@ -18,7 +18,8 @@ import Prelude ()
 import Control.Concurrent (forkIO, getNumCapabilities)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
-import Control.Exception (bracket_, try)
+import Control.Exception (bracket, bracket_, try)
+import GHC.IO.Handle.Lock (LockMode (..), hTryLock)
 import Control.Monad (forM, forM_)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -44,7 +45,7 @@ import System.Directory
 import Data.Time.Clock (UTCTime, diffUTCTime)
 import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, takeDirectory, takeFileName, (</>))
-import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryTempFile, withFile)
+import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryFile, openBinaryTempFile, withFile)
 
 import qualified Data.Digest.XXHash.FFI as XXH
 import Distribution.Simple.Utils (die', info, noticeNoWrap)
@@ -551,6 +552,15 @@ touchSilently p = do
 
 -- | If the cache is over its byte cap, delete oldest blobs (and their
 -- manifest siblings) until under cap. Called on every miss-with-write.
+--
+-- Concurrent builds: a second cabal-install that writes a blob while
+-- we are also writing one will both end up here. Without coordination
+-- they'd both walk the dir, both pick a slightly different sorted
+-- "oldest" set, and possibly evict each other's freshly-written
+-- blobs. We take a non-blocking exclusive flock on @.gc.lock@ in the
+-- cache dir; if a peer is already evicting, we just leave it to them
+-- (skipping our own pass is correctness-safe: at worst the cache
+-- briefly exceeds the cap until the next write).
 enforceSizeCap :: Verbosity -> FilePath -> IO ()
 enforceSizeCap verbosity cacheDir = do
   capStr <- lookupEnv "CABAL_LINK_CACHE_MAX_BYTES"
@@ -565,10 +575,22 @@ enforceSizeCap verbosity cacheDir = do
     mt <- getModificationTime p
     return (p, sz, mt)
   let total = sum [sz | (_, sz, _) <- entries]
-  when (total > cap) $ do
-    info verbosity $
-      "[link-cache] GC: total=" <> show total <> " cap=" <> show cap
-    evict cap total (sortBy (comparing (\(_, _, mt) -> mt)) entries)
+  when (total > cap) $
+    withCacheLock cacheDir $ do
+      -- Re-stat under the lock: a peer may have already evicted
+      -- enough between our pre-lock measurement and the moment we
+      -- got it. Cheap, avoids redundant work.
+      names2 <- listDirectory cacheDir
+      entries2 <- for [n | n <- names2, ".blob" `isSuffixOf` n] $ \n -> do
+        let p = cacheDir </> n
+        sz <- getFileSize p
+        mt <- getModificationTime p
+        return (p, sz, mt)
+      let total2 = sum [sz | (_, sz, _) <- entries2]
+      when (total2 > cap) $ do
+        info verbosity $
+          "[link-cache] GC: total=" <> show total2 <> " cap=" <> show cap
+        evict cap total2 (sortBy (comparing (\(_, _, mt) -> mt)) entries2)
   where
     evict _ _ [] = return ()
     evict cap total ((p, sz, _) : rest)
@@ -577,6 +599,29 @@ enforceSizeCap verbosity cacheDir = do
           removeIfExists p
           removeIfExists (replaceExtension p ".manifest")
           evict cap (total - sz) rest
+
+-- | Hold an exclusive non-blocking lock on @<cacheDir>/.gc.lock@ for
+-- the duration of @act@. If a peer already holds the lock, we do
+-- not block: we just skip @act@. The next writer will retry the
+-- check on their own miss.
+--
+-- File-locking through 'hTryLock' uses 'flock' on POSIX and
+-- 'LockFileEx' on Windows; both are advisory but observed by every
+-- well-behaved peer that goes through this path. Any IOException
+-- from the lock dance is treated as "lock unavailable, skip" so
+-- the cache never fails a build due to GC contention.
+withCacheLock :: FilePath -> IO () -> IO ()
+withCacheLock cacheDir act = do
+  let lockPath = cacheDir </> ".gc.lock"
+      openLock = do
+        createDirectoryIfMissing True (takeDirectory lockPath)
+        openBinaryFile lockPath ReadWriteMode
+  res <- try $ bracket openLock hClose $ \h -> do
+    got <- hTryLock h ExclusiveLock
+    when got act
+  case res of
+    Right () -> return ()
+    Left (_ :: IOException) -> return ()
 
 removeIfExists :: FilePath -> IO ()
 removeIfExists p = do
