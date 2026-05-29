@@ -7,6 +7,9 @@
 -- "Distribution.Simple.GHC.Build.Link" for design rationale.
 module Distribution.Simple.GHC.LinkManifest
   ( withSkippableLink
+  , LinkContext (..)
+  , noCacheContext
+  , skipReason
   ) where
 
 import Distribution.Compat.Prelude
@@ -100,30 +103,79 @@ statIndexName = ".stat-index.v2"
 -- * @CABAL_LINK_CACHE_VERIFY_FAIL=1@ (only meaningful together with
 --   @CABAL_LINK_CACHE_VERIFY@) escalates a verification mismatch to a
 --   hard build error rather than a log message.
-withSkippableLink
-  :: Verbosity
-  -> FilePath
-  -- ^ The target file the inner action will produce.
-  -> String
+
+-- | Per-link context: the tool, the toolchain identity that has to be
+-- in the cache key, and an optional reason to skip the cache entirely
+-- for this call.
+--
+-- The toolchain identity carries the compiler id and the resolved
+-- paths of the relevant link tools (ghc, ld). Without this a system
+-- linker upgrade can produce different output bytes from byte-equal
+-- inputs and the cache would silently return stale blobs.
+--
+-- The skip reason lets callers opt out of the cache when their
+-- enumeration of link inputs is incomplete or untrusted (e.g. when
+-- 'linkDepArchives' could not confirm every dep-package archive).
+-- A skipped link still records a stats record so the
+-- ratio of skipped-to-cached calls is observable.
+data LinkContext = LinkContext
+  { lcTool :: !String
   -- ^ Tool identifier, e.g. @"ghc-link-exe"@, @"ar-static"@. Included
   -- in the cache key so two tools writing to the same target never
   -- collide.
+  , lcToolchainId :: !String
+  -- ^ Stable identity of the toolchain (compiler id + resolved tool
+  -- paths). Included in the cache key.
+  , lcSkipReason :: !(Maybe String)
+  -- ^ @Just r@ skips the cache entirely with reason @r@ logged at
+  -- notice; the inner action runs unconditionally.
+  }
+
+-- | A 'LinkContext' that opts the link out of the cache, for callers
+-- that hit a situation where reading the cache would be unsafe.
+noCacheContext :: String -> String -> String -> LinkContext
+noCacheContext tool tcid reason =
+  LinkContext
+    { lcTool = tool
+    , lcToolchainId = tcid
+    , lcSkipReason = Just reason
+    }
+
+-- | Convenience: set a 'lcSkipReason' on an existing context.
+skipReason :: String -> LinkContext -> LinkContext
+skipReason r ctx = ctx{lcSkipReason = Just r}
+
+withSkippableLink
+  :: Verbosity
+  -> LinkContext
+  -- ^ Per-call context (tool, toolchain identity, optional skip).
+  -> FilePath
+  -- ^ The target file the inner action will produce.
   -> [FilePath]
   -- ^ Input files whose bytes determine the output bytes.
   -> IO ()
   -- ^ The original link action.
   -> IO ()
-withSkippableLink verbosity target tool inputs action = do
+withSkippableLink verbosity ctx target inputs action = do
   disabled <- lookupEnv "CABAL_LINK_CACHE_DISABLE"
-  case disabled of
-    Just s | not (null s) -> action
-    _ -> cachedLink verbosity target tool inputs action
+  case (disabled, lcSkipReason ctx) of
+    (Just s, _) | not (null s) -> action
+    (_, Just r) -> do
+      noticeNoWrap verbosity $
+        "[link-cache] SKIPPED (" <> lcTool ctx <> ") " <> target
+          <> ": " <> r <> "\n"
+      t0 <- getCurrentTime
+      action
+      t1 <- getCurrentTime
+      appendStatsSilently target (lcTool ctx) StatsSkipped inputs t0 t1
+    _ -> cachedLink verbosity ctx target inputs action
 
 -- | Outcome of a single 'cachedLink' invocation, used for telemetry.
 data StatsOutcome
   = StatsHit
   | StatsMiss
   | StatsDisabled
+  | StatsSkipped
   | StatsHitVerified
   | StatsHitDiverged
 
@@ -131,6 +183,7 @@ outcomeWord :: StatsOutcome -> String
 outcomeWord StatsHit = "hit"
 outcomeWord StatsMiss = "miss"
 outcomeWord StatsDisabled = "disabled"
+outcomeWord StatsSkipped = "skipped"
 outcomeWord StatsHitVerified = "hit-verified"
 outcomeWord StatsHitDiverged = "hit-diverged"
 
@@ -139,20 +192,21 @@ outcomeWord StatsHitDiverged = "hit-diverged"
 -- disk full) downgrades to a plain @action@ run. The cache is a
 -- correctness-preserving optimisation; failing soft is the right
 -- default for a build-tool patch.
-cachedLink :: Verbosity -> FilePath -> String -> [FilePath] -> IO () -> IO ()
-cachedLink verbosity target tool inputs action = do
+cachedLink :: Verbosity -> LinkContext -> FilePath -> [FilePath] -> IO () -> IO ()
+cachedLink verbosity ctx target inputs action = do
   t0 <- getCurrentTime
   outcome <-
-    cachedLinkUnsafe verbosity target tool inputs action `catch` \e -> do
+    cachedLinkUnsafe verbosity ctx target inputs action `catch` \e -> do
       info verbosity $
-        "[link-cache] DISABLED (" <> tool <> "): " <> show (e :: IOException)
+        "[link-cache] DISABLED (" <> lcTool ctx <> "): " <> show (e :: IOException)
       action
       return StatsDisabled
   t1 <- getCurrentTime
-  appendStatsSilently target tool outcome inputs t0 t1
+  appendStatsSilently target (lcTool ctx) outcome inputs t0 t1
 
-cachedLinkUnsafe :: Verbosity -> FilePath -> String -> [FilePath] -> IO () -> IO StatsOutcome
-cachedLinkUnsafe verbosity target tool inputs action = do
+cachedLinkUnsafe :: Verbosity -> LinkContext -> FilePath -> [FilePath] -> IO () -> IO StatsOutcome
+cachedLinkUnsafe verbosity ctx target inputs action = do
+  let tool = lcTool ctx
   cacheDir <- linkCacheDir
   createDirectoryIfMissing True cacheDir
   let indexPath = cacheDir </> statIndexName
@@ -172,7 +226,7 @@ cachedLinkUnsafe verbosity target tool inputs action = do
   -- serial, but the cold-read path overlaps disk I/O usefully.
   inputDigests <- traverseConcurrentlyBounded hashOne inputs
   when useStat $ flushStatIndex indexRef dirtyRef indexPath
-  let key = computeKey (takeFileName target) tool inputDigests
+  let key = computeKey (takeFileName target) tool (lcToolchainId ctx) inputDigests
   let blobPath = cacheDir </> key <> ".blob"
       manifestPath = cacheDir </> key <> ".manifest"
   hit <- doesFileExist blobPath
@@ -380,16 +434,22 @@ writeStatIndex path ours = do
           ]
   atomicWriteBytes path (BS8.pack body)
 
--- | Key is @(tool, target basename, sorted input digests)@. The target's
--- *directory* is intentionally absent: two checkouts of the same project
--- produce the same key and share cached link outputs.
-computeKey :: String -> String -> [(FilePath, String)] -> String
-computeKey targetName tool digests = showMD5 (md5 keyBytes)
+-- | Key is @(tool, target basename, toolchain id, sorted input digests)@.
+-- The target's *directory* is intentionally absent: two checkouts of
+-- the same project produce the same key and share cached link
+-- outputs.
+--
+-- The toolchain id strings together the compiler id and the resolved
+-- ghc/ld paths; an ld upgrade or a ghc-version flip therefore busts
+-- the cache rather than yielding silent stale hits.
+computeKey :: String -> String -> String -> [(FilePath, String)] -> String
+computeKey targetName tool toolchainId digests = showMD5 (md5 keyBytes)
   where
     keyBytes =
       BS8.pack $
         "tool:" <> tool <> "\n"
           <> "name:" <> targetName <> "\n"
+          <> "toolchain:" <> toolchainId <> "\n"
           <> concatMap (\(b, h) -> h <> "  " <> b <> "\n") (sort digests)
 
 writeManifest :: FilePath -> String -> FilePath -> [(FilePath, String)] -> IO ()
