@@ -366,21 +366,34 @@ fileInode path =
 -- @max 4 numCapabilities@ workers in flight. Order of results matches
 -- the input list. Exceptions in workers are rethrown in the caller.
 --
+-- For short input lists the forkIO/QSem dispatch overhead exceeds
+-- any I/O-overlap benefit, so we fall back to serial 'traverse'
+-- below 'parallelHashThreshold' inputs. The empirical break-even
+-- point is around half a dozen files on warm caches; we set it at
+-- 8 to stay clearly above the noise floor.
+--
 -- Lib:Cabal builds may not have the threaded RTS, but 'forkIO' still
 -- yields concurrent interleaving for I/O-bound work — and hashing
 -- 100 object files is overwhelmingly I/O-bound.
 traverseConcurrentlyBounded :: (a -> IO b) -> [a] -> IO [b]
-traverseConcurrentlyBounded f xs = do
-  caps <- getNumCapabilities
-  let cap = max 4 caps
-  sem <- newQSem cap
-  slots <- traverse (\_ -> newEmptyMVar) xs
-  forM_ (zip slots xs) $ \(slot, x) ->
-    forkIO $ do
-      r <- trySome (bracket_ (waitQSem sem) (signalQSem sem) (f x))
-      putMVar slot r
-  forM slots $ \slot ->
-    takeMVar slot >>= either throwIO pure
+traverseConcurrentlyBounded f xs
+  | length xs < parallelHashThreshold = traverse f xs
+  | otherwise = do
+      caps <- getNumCapabilities
+      let cap = max 4 caps
+      sem <- newQSem cap
+      slots <- traverse (\_ -> newEmptyMVar) xs
+      forM_ (zip slots xs) $ \(slot, x) ->
+        forkIO $ do
+          r <- trySome (bracket_ (waitQSem sem) (signalQSem sem) (f x))
+          putMVar slot r
+      forM slots $ \slot ->
+        takeMVar slot >>= either throwIO pure
+
+-- | Below this many inputs, fall back to serial hashing. Picked to
+-- stay above the cost of one forkIO + one QSem signal pair.
+parallelHashThreshold :: Int
+parallelHashThreshold = 8
 
 trySome :: IO a -> IO (Either SomeException a)
 trySome = try
