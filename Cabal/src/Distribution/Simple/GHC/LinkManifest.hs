@@ -88,6 +88,58 @@ noticeOnce verbosity key msg = do
     then noticeNoWrap verbosity (msg <> "\n")
     else info verbosity msg
 
+-- | Process-wide cache of the stat-index, keyed by @(indexPath)@.
+-- Two consecutive 'withSkippableLink' calls in the same process
+-- previously each read @.stat-index.v2@ from disk fresh. With this
+-- ref, the first call loads it; later calls re-use the in-memory
+-- 'Map' and only have to flush their own additions.
+--
+-- The 'Bool' is a dirty flag: we only re-write the sidecar when at
+-- least one new entry was added since the last flush. Each flush
+-- resets the flag, so chains of all-stat-hit links never re-write
+-- the file.
+--
+-- Keyed by @indexPath@ rather than singleton so the (rare) case of
+-- 'CABAL_LINK_CACHE_DIR' changing mid-process keeps a separate
+-- in-memory map per dir, instead of mixing entries from two caches.
+{-# NOINLINE sessionStatIndex #-}
+sessionStatIndex :: IORef (Map.Map FilePath (StatIndex, Bool))
+sessionStatIndex = unsafePerformIO (newIORef Map.empty)
+
+-- | Get (or load) the per-indexPath session entry. Returns refs to
+-- the in-memory index and its dirty flag, both rooted in
+-- 'sessionStatIndex' so subsequent calls observe the same state.
+getSessionStatRefs
+  :: FilePath
+  -- ^ Path to the on-disk stat-index sidecar.
+  -> IO (IORef (Maybe StatIndex), IORef Bool)
+getSessionStatRefs indexPath = do
+  -- The shared 'sessionStatIndex' map only stores plain
+  -- 'StatIndex' values; we wrap a fresh local pair of refs that
+  -- reads from / writes back to it, so the rest of the code keeps
+  -- the same indexRef / dirtyRef shape.
+  ixRef <- newIORef =<< do
+    s <- readIORef sessionStatIndex
+    return $ Just (maybe Map.empty fst (Map.lookup indexPath s))
+  dirtyRef <- newIORef False
+  -- We rely on 'flushStatIndex' (called by the existing code) to
+  -- write back through 'writeStatIndex' below; that function also
+  -- pushes the updated index into the shared map.
+  return (ixRef, dirtyRef)
+
+-- | After the local 'flushStatIndex' has serialised the in-memory
+-- map to disk, publish the same map into 'sessionStatIndex' so the
+-- next 'withSkippableLink' call sees it without re-reading the
+-- sidecar. Unions with any concurrent peer's additions so we don't
+-- silently clobber them.
+publishStatIndex :: FilePath -> StatIndex -> IO ()
+publishStatIndex indexPath ix =
+  atomicModifyIORef' sessionStatIndex $ \s ->
+    let merged = case Map.lookup indexPath s of
+          Just (prev, _) -> Map.union ix prev
+          Nothing -> ix
+     in (Map.insert indexPath (merged, False) s, ())
+
 -- | In-memory stat-index: maps each input file's absolute path to
 -- @(size, mtime, inode, hash)@. If the on-disk file's @(size, mtime,
 -- inode)@ all match the stored tuple we trust the stored hash and
@@ -260,8 +312,10 @@ cachedLinkUnsafe verbosity ctx target inputs action = do
       "[link-cache] note: stat short-circuit on Windows is (size, mtime)-only "
         <> "(no inode); set CABAL_LINK_CACHE_NO_STAT=1 to disable it."
 #endif
-  indexRef <- newIORef (Nothing :: Maybe StatIndex)
-  dirtyRef <- newIORef False
+  (indexRef, dirtyRef) <-
+    if useStat
+      then getSessionStatRefs indexPath
+      else (,) <$> newIORef (Nothing :: Maybe StatIndex) <*> newIORef False
   let hashOne p
         | useStat = hashInputCached indexRef dirtyRef indexPath p
         | otherwise = hashInput p
@@ -473,7 +527,13 @@ flushStatIndex indexRef dirtyRef path = do
   when dirty $ do
     mix <- readIORef indexRef
     case mix of
-      Just ix -> writeStatIndex path ix
+      Just ix -> do
+        writeStatIndex path ix
+        -- Publish the just-flushed map into the session-scope
+        -- shared state so the next link in this process picks up
+        -- the additions without re-reading the sidecar.
+        publishStatIndex path ix
+        writeIORef dirtyRef False
       Nothing -> return ()
 
 -- | Write the in-memory index back to disk. Concurrent cabal-install
