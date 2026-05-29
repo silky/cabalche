@@ -15,7 +15,12 @@
 # the link step is the only thing that has to run.
 #
 # Usage:
-#   scripts/link-cache-bench.sh <project-dir> [--cabal=PATH] [--bench-iters=N]
+#   scripts/link-cache-bench.sh <project-dir> \
+#       [--cabal=PATH] [--bench-iters=N] [--target=TARGET]
+#
+# --target defaults to "all"; pass a specific component name for
+# multi-package projects (e.g. "hydra-node" to focus on one exe's
+# link cone). Anything that 'cabal build' accepts works.
 #
 # Outputs the bench table to stdout. Per-link telemetry is collected
 # alongside (cache root is isolated) and aggregated via
@@ -26,11 +31,13 @@ set -euo pipefail
 PROJECT=""
 CABAL="cabal"
 ITERS=3
+TARGET="all"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --cabal=*)       CABAL="${1#*=}"; shift ;;
     --bench-iters=*) ITERS="${1#*=}"; shift ;;
+    --target=*)      TARGET="${1#*=}"; shift ;;
     -h|--help)
       sed -n '2,/^$/p' "$0"
       exit 0
@@ -125,18 +132,18 @@ run_iteration() {
 
   local seconds
   seconds="$(time_cmd env "${env_overrides[@]}" \
-              bash -c "cd '$PROJECT' && '$CABAL' build all >/dev/null 2>&1")"
+              bash -c "cd '$PROJECT' && '$CABAL' build '$TARGET' >/dev/null 2>&1")"
   printf '%s\t%s\t%s\n' "$condition" "$iter" "$seconds" >> "$RESULT_TSV"
 }
 
 # Warmup: ensure deps are built so we don't measure dep installation.
 echo ">>> warmup build (excluded from results)"
-run_in_project "$CABAL" build all >/dev/null 2>&1 || true
+run_in_project "$CABAL" build "$TARGET" >/dev/null 2>&1 || true
 
 # Populate the warm cache before measuring the relink-warm conditions.
 echo ">>> populating cache"
 env "CABAL_LINK_CACHE_DIR=$CACHE_DIR" \
-  bash -c "cd '$PROJECT' && '$CABAL' build all >/dev/null 2>&1" || true
+  bash -c "cd '$PROJECT' && '$CABAL' build '$TARGET' >/dev/null 2>&1" || true
 
 for i in $(seq 1 "$ITERS"); do
   echo ">>> iteration $i / $ITERS"
