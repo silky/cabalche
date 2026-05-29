@@ -18,12 +18,14 @@ import Prelude ()
 import Control.Concurrent (forkIO, getNumCapabilities)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
-import Control.Exception (bracket_, throwIO, try)
+import Control.Exception (bracket_, try)
 import Control.Monad (forM, forM_)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
+import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
+import System.IO.Unsafe (unsafePerformIO)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import System.Directory
@@ -57,6 +59,33 @@ import qualified System.Posix.Files as Posix
 -- | Default cap when @CABAL_LINK_CACHE_MAX_BYTES@ is unset or unparseable.
 defaultMaxBytes :: Integer
 defaultMaxBytes = 5 * 1024 * 1024 * 1024
+
+-- | Per-process set of keys for which we've already emitted a notice.
+-- The cache layer fails soft (any IOException downgrades to a plain
+-- linker run), and a chronic failure can spam the build log. We log
+-- the first occurrence of each unique key at notice level so the user
+-- knows the cache is degraded, and subsequent occurrences only at
+-- info so the rest of the build stays readable.
+--
+-- Module-level state via 'unsafePerformIO' is the standard pattern
+-- here: there's no other shared place to hang per-process state
+-- across calls to 'withSkippableLink' from different setup
+-- invocations.
+{-# NOINLINE noticeOnceState #-}
+noticeOnceState :: IORef (Set.Set String)
+noticeOnceState = unsafePerformIO (newIORef Set.empty)
+
+-- | Log @msg@ at notice level the first time @key@ is seen this
+-- process; thereafter log the same message at info level only.
+noticeOnce :: Verbosity -> String -> String -> IO ()
+noticeOnce verbosity key msg = do
+  isFirst <- atomicModifyIORef' noticeOnceState $ \s ->
+    if Set.member key s
+      then (s, False)
+      else (Set.insert key s, True)
+  if isFirst
+    then noticeNoWrap verbosity (msg <> "\n")
+    else info verbosity msg
 
 -- | In-memory stat-index: maps each input file's absolute path to
 -- @(size, mtime, inode, hash)@. If the on-disk file's @(size, mtime,
@@ -197,7 +226,10 @@ cachedLink verbosity ctx target inputs action = do
   t0 <- getCurrentTime
   outcome <-
     cachedLinkUnsafe verbosity ctx target inputs action `catch` \e -> do
-      info verbosity $
+      -- A chronic cause (e.g. unwritable $HOME under nix sandbox)
+      -- will fire here on every link. Notice the first instance per
+      -- process so the user sees the cache is off; info the rest.
+      noticeOnce verbosity "DISABLED" $
         "[link-cache] DISABLED (" <> lcTool ctx <> "): " <> show (e :: IOException)
       action
       return StatsDisabled
@@ -214,6 +246,19 @@ cachedLinkUnsafe verbosity ctx target inputs action = do
   let useStat = case noStat of
         Just s | not (null s) -> False
         _ -> True
+#if defined(mingw32_HOST_OS)
+  -- 'fileInode' returns 0 on Windows (no inode equivalent without
+  -- 'GetFileInformationByHandle'), so the @(size, mtime, inode)@
+  -- stat-key degrades to @(size, mtime)@. That is strictly weaker
+  -- than the POSIX version against tar-style restore patterns that
+  -- preserve mtime. Notice this once per process so the user can
+  -- choose to disable the short-circuit (CABAL_LINK_CACHE_NO_STAT=1)
+  -- if it is a concern.
+  when useStat $
+    noticeOnce verbosity "WINDOWS_STAT_DEGRADED" $
+      "[link-cache] note: stat short-circuit on Windows is (size, mtime)-only "
+        <> "(no inode); set CABAL_LINK_CACHE_NO_STAT=1 to disable it."
+#endif
   indexRef <- newIORef (Nothing :: Maybe StatIndex)
   dirtyRef <- newIORef False
   let hashOne p
