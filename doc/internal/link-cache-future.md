@@ -109,6 +109,31 @@ We should not enable cross-machine sharing until at least three
 months of VERIFY canary data shows no HIT-DIVERGED lines across the
 intended toolchain matrix.
 
+## Why we copy instead of hardlink on HIT
+
+A tempting optimisation for the HIT-not-already-current path: replace
+`atomicCopy blobPath target` with a hardlink so the target and the
+blob share an inode. For a 20MB exe this trades a few tens of ms of
+data movement for ~zero wall-clock.
+
+We don't do this because in-place mutation of the target by user
+tools (`strip`, the macOS code signer, a debugger-symbol rewriter)
+would corrupt the cached blob: any future HIT would byte-copy the
+mutated bytes back. The stamp would still claim the original key,
+so the divergence wouldn't even register without a VERIFY canary.
+
+`reflink(2)` (FICLONE / FICLONERANGE on btrfs/XFS) sidesteps this
+with copy-on-write semantics but requires a syscall binding we
+don't currently have. `copy_file_range` would be faster than naive
+read/write but still produces an independent file (which is what we
+want); a future change can route through it on Linux.
+
+In practice the HIT-already-current path (where the target is
+already byte-equal to the blob via the stamp short-circuit) covers
+the common case and is sub-ms anyway, so the savings on
+HIT-not-already-current would be modest even before the
+strip-footgun.
+
 ## What we explicitly do not do
 
 * **Trust unsigned blobs from a network cache.** Any cross-machine
