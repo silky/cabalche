@@ -571,35 +571,108 @@ removeIfExists p = do
   when exists (removeFile p)
 
 -- | Sidecar file recording which cache key @target@ was last populated
--- from. The presence of @<target>.link-cache-stamp@ containing the
--- current key means @target@ is already byte-equal to the blob, so
--- the atomicCopy on HIT can be skipped.
+-- from /and/ the stat-trio of the target at that moment. The stamp
+-- alone isn't enough: a stamp recording "key X" plus a target that
+-- claims to be at key X could still have been overwritten by an
+-- out-of-band tool between our write and the next build. The stat
+-- trio catches that.
+--
+-- The file lives at @<target>.link-cache-stamp@ in a versioned
+-- line-based format:
+--
+-- > v: 2
+-- > key: <cache key>
+-- > size: <integer>
+-- > mtime: <utc-picos>
+-- > inode: <integer or 0 on Windows>
+--
+-- Anything that doesn't parse as v2 is treated as missing. The
+-- @v: N@ first-line discriminator lets future format bumps invalidate
+-- old stamps without touching this code.
 stampPath :: FilePath -> FilePath
 stampPath target = target <> ".link-cache-stamp"
 
+-- | Record the cache key and the target's current stat-trio so a
+-- later @targetMatchesStamp@ can detect out-of-band mutation.
 writeStampSilently :: FilePath -> String -> IO ()
-writeStampSilently target key =
-  atomicWriteBytes (stampPath target) (BS8.pack key) `catch` ignoreIO
+writeStampSilently target key = go `catch` ignoreIO
   where
     ignoreIO :: IOException -> IO ()
     ignoreIO _ = return ()
+    go = do
+      sz <- getFileSize target
+      mt <- getModificationTime target
+      ino <- fileInode target
+      let body =
+            unlines
+              [ "v: 2"
+              , "key: " <> key
+              , "size: " <> show sz
+              , "mtime: " <> show (utcTimeToPOSIXSeconds mt)
+              , "inode: " <> show ino
+              ]
+      atomicWriteBytes (stampPath target) (BS8.pack body)
 
+-- | The stamp claims the target is currently at key @k@ /with this
+-- specific stat trio/. We trust the stamp iff:
+--
+--   1. the target exists and the stamp exists;
+--   2. the stamp parses as v2;
+--   3. the recorded key matches the cache key we just computed; and
+--   4. the recorded @(size, mtime, inode)@ matches the on-disk
+--      target's current stat-trio.
+--
+-- If any of those fails we fall through to a fresh blob copy.
 targetMatchesStamp :: FilePath -> String -> IO Bool
 targetMatchesStamp target key = do
   targetExists <- doesFileExist target
   if not targetExists
     then return False
     else do
-      let p = stampPath target
-      stampExists <- doesFileExist p
-      if not stampExists
-        then return False
-        else do
-          recorded <- (Just . BS8.unpack <$> BS.readFile p) `catch` orNothing
-          return (recorded == Just key)
+      mStamp <- readStamp (stampPath target)
+      case mStamp of
+        Nothing -> return False
+        Just (recKey, recSize, recMtime, recIno)
+          | recKey /= key -> return False
+          | otherwise -> do
+              sz <- getFileSize target
+              mt <- getModificationTime target
+              ino <- fileInode target
+              let mtStr = show (utcTimeToPOSIXSeconds mt)
+              return $
+                recSize == sz
+                  && recMtime == mtStr
+                  && recIno == ino
+
+-- | Parse a v2 stamp file. Returns @Nothing@ on any read or parse
+-- failure, equivalent to "no stamp". Earlier (key-only) stamps fail
+-- to parse and are silently invalidated.
+readStamp :: FilePath -> IO (Maybe (String, Integer, String, Integer))
+readStamp p = do
+  exists <- doesFileExist p
+  if not exists
+    then return Nothing
+    else (parseStamp <$> BS.readFile p) `catch` orNothing
   where
-    orNothing :: IOException -> IO (Maybe String)
+    orNothing :: IOException -> IO (Maybe (String, Integer, String, Integer))
     orNothing _ = return Nothing
+
+parseStamp :: BS.ByteString -> Maybe (String, Integer, String, Integer)
+parseStamp raw = do
+  let ls = map BS8.unpack (BS8.lines raw)
+      pick k =
+        case [drop (length prefix) l | l <- ls, let prefix = k <> ": ", prefix `isPrefixOf` l] of
+          (v : _) -> Just v
+          _ -> Nothing
+  v <- pick "v"
+  if v /= "2" then Nothing else do
+    key <- pick "key"
+    szStr <- pick "size"
+    mt <- pick "mtime"
+    inoStr <- pick "inode"
+    sz <- readMaybe szStr
+    ino <- readMaybe inoStr
+    return (key, sz, mt, ino)
 
 -- | Append a JSONL line summarising one cache invocation. Best-effort:
 -- any IOException is swallowed so telemetry never breaks a build.
