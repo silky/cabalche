@@ -90,7 +90,7 @@ statIndexName = ".stat-index.v2"
 -- * @CABAL_LINK_CACHE_MAX_BYTES=N@ caps cache size in bytes; on a write
 --   we evict oldest entries until under the cap (default 5 GiB).
 -- * @CABAL_LINK_CACHE_NO_STAT=1@ disables the stat-based short-circuit
---   on input hashing (forces a full read+MD5 of every input file).
+--   on input hashing (forces a full read+xxh64 of every input file).
 -- * @CABAL_LINK_CACHE_NO_STATS=1@ disables the per-link telemetry append
 --   to @.stats.jsonl@ under the cache root.
 -- * @CABAL_LINK_CACHE_VERIFY=1@ enables canary mode: on a hit the
@@ -286,11 +286,11 @@ traverseConcurrentlyBounded f xs = do
 trySome :: IO a -> IO (Either SomeException a)
 trySome = try
 
--- | Like 'hashInput', but consults a @(size, mtime)@-keyed sidecar
--- index first. On a stat match the recorded MD5 is reused and the
--- file's bytes are not read. On a miss we read+MD5 the bytes and
--- update the index in memory (with @dirtyRef@ flipped to 'True' so
--- the on-disk index gets rewritten at the end of the link).
+-- | Like 'hashInput', but consults a @(size, mtime, inode)@-keyed
+-- sidecar index first. On a stat match the recorded xxh64 is reused
+-- and the file's bytes are not read. On a miss we read+xxh64 the
+-- bytes and update the index in memory (with @dirtyRef@ flipped to
+-- 'True' so the on-disk index gets rewritten at the end of the link).
 --
 -- The index is loaded lazily: 'Nothing' in @indexRef@ means "not
 -- loaded yet". A read failure (missing file, corrupt line) falls

@@ -15,7 +15,13 @@ The cache is single-rooted, per-user, content-keyed by:
 
 * tool identifier (e.g. `"ar-static"`, `"ghc-link-exe"`),
 * target file basename, and
-* sorted MD5 digests of every link input.
+* sorted xxh64 digests of every link input.
+
+The 16-char xxh64 hex digests are concatenated with the tool/name
+prefix and MD5'd to produce the final 32-char cache key. xxh64 is
+chosen for input hashing because hashing the link inputs is the
+dominant cost on cold caches and xxh64 is roughly 5-10x faster than
+MD5; the final MD5 of the keyBytes is cheap regardless.
 
 Sharing scope:
 

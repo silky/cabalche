@@ -9,7 +9,7 @@ byte-copies the cached blob to the target and skips the linker call,
 which can turn a multi-second clean relink into a fraction of a second
 on large projects.
 
-The cache key is `(tool identifier, target basename, sorted MD5
+The cache key is `(tool identifier, target basename, sorted xxh64
 digests of all link inputs)`. The target's directory is not part of
 the key, so two checkouts of the same package share cached outputs
 when they emit identically-named libraries and executables.
