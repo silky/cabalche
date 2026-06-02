@@ -18,7 +18,7 @@ import Prelude ()
 import Control.Concurrent (forkIO, getNumCapabilities)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
-import Control.Exception (bracket, bracket_, try)
+import Control.Exception (Exception, bracket, bracket_, throwIO, try)
 import Control.Monad (forM, forM_)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -48,7 +48,7 @@ import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Data.Digest.XXHash.FFI as XXH
 import Data.Hashable (hashWithSalt)
-import Distribution.Simple.Utils (die', info, noticeNoWrap)
+import Distribution.Simple.Utils (info, notice, noticeNoWrap)
 import Distribution.Utils.MD5 (md5, showMD5)
 import Distribution.Verbosity (Verbosity)
 import Numeric (showHex)
@@ -289,6 +289,14 @@ outcomeWord StatsDisabled = "disabled"
 outcomeWord StatsSkipped = "skipped"
 outcomeWord StatsHitVerified = "hit-verified"
 outcomeWord StatsHitDiverged = "hit-diverged"
+
+-- | Hard-fail exception for @CABAL_LINK_CACHE_VERIFY_FAIL=1@. Kept
+-- separate from 'IOException' so the soft-fail catch in 'cachedLink'
+-- doesn't swallow it.
+data LinkCacheVerifyFailed = LinkCacheVerifyFailed FilePath String
+  deriving (Show)
+
+instance Exception LinkCacheVerifyFailed
 
 -- | Wrap the cache logic so any IOError (no writable @$XDG_CACHE_HOME@
 -- — e.g. nix sandbox sets @HOME=/homeless-shelter@; read-only home;
@@ -1002,12 +1010,13 @@ verifyHit verbosity tool target action blobPath cacheDir key = do
           failHard <- lookupEnv "CABAL_LINK_CACHE_VERIFY_FAIL"
           case failHard of
             Just s
-              | not (null s) ->
-                  die' verbosity $
+              | not (null s) -> do
+                  notice verbosity $
                     "[link-cache] verification mismatch for "
                       <> target
                       <> " (tool="
                       <> tool
                       <> ")"
+                  throwIO (LinkCacheVerifyFailed target tool)
             _ -> return ()
           return StatsHitDiverged
