@@ -135,6 +135,17 @@ contract is documented at the top of
 `CABAL_LINK_CACHE_NO_STAT`, `CABAL_LINK_CACHE_NO_STATS`,
 `CABAL_LINK_CACHE_VERIFY`, `CABAL_LINK_CACHE_VERIFY_FAIL`).
 
+### CI note
+
+The `Bootstrap` workflow (`.github/workflows/bootstrap.yml`) is
+disabled on this fork via `if: github.repository == 'haskell/cabal'`.
+The pinned `bootstrap/linux-*.json` plans don't list `xxhash-ffi` or
+`hashable` (both added to `lib:Cabal` by the link-cache work) and
+regenerating six per-GHC plans per hackage revision isn't justified
+when the fork's distribution channel is the Nix flake above. All
+other CI workflows (`Validate`, `Build-alpine`, `fourmolu`, `hlint`,
+`typos`, etc.) run unchanged.
+
 ---
 
 Proposals for the Cabal project
