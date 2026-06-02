@@ -1,6 +1,6 @@
 { mkDerivation, array, base, bytestring, Cabal-syntax, containers
-, deepseq, directory, filepath, lib, mtl, parsec, pretty, process
-, time, transformers, unix, xxhash-ffi
+, deepseq, directory, filepath, hashable, lib, mtl, parsec, pretty
+, process, time, transformers, unix, xxhash-ffi
 }:
 mkDerivation {
   pname = "Cabal";
@@ -9,7 +9,7 @@ mkDerivation {
   setupHaskellDepends = [ mtl parsec ];
   libraryHaskellDepends = [
     array base bytestring Cabal-syntax containers deepseq directory
-    filepath mtl parsec pretty process time transformers unix
+    filepath hashable mtl parsec pretty process time transformers unix
     xxhash-ffi
   ];
   doCheck = false;
