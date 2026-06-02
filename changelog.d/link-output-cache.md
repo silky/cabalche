@@ -1,6 +1,7 @@
 ---
 synopsis: "Content-addressed cache for link outputs (experimental)"
 packages: [Cabal]
+prs: 1
 ---
 
 `lib:Cabal` now caches `ar`, `ld -r`, `ghc -shared`, `ghc -staticlib`,

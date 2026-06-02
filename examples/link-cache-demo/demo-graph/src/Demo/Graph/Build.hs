@@ -1,6 +1,3 @@
-{-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Adjacency-list graph keyed by 'NodeId' with edge 'Weight's.

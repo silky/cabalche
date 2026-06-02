@@ -27,7 +27,7 @@ import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef,
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import System.IO.Unsafe (unsafePerformIO)
-import Data.Time.Clock (getCurrentTime)
+import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import System.Directory
   ( XdgDirectory (..)
@@ -42,7 +42,6 @@ import System.Directory
   , renameFile
   , setModificationTime
   )
-import Data.Time.Clock (UTCTime, diffUTCTime)
 import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, takeDirectory, takeFileName, (</>))
 import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryFile, openBinaryTempFile, withFile)
@@ -793,7 +792,7 @@ parseStamp :: BS.ByteString -> Maybe (String, Integer, String, Integer)
 parseStamp raw = do
   let ls = map BS8.unpack (BS8.lines raw)
       pick k =
-        case [drop (length prefix) l | l <- ls, let prefix = k <> ": ", prefix `isPrefixOf` l] of
+        case [drop (length prefix) l | let prefix = k <> ": ", l <- ls, prefix `isPrefixOf` l] of
           (v : _) -> Just v
           _ -> Nothing
   v <- pick "v"

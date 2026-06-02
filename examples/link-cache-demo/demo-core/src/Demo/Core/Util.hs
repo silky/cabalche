@@ -1,8 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
-{-# LANGUAGE TupleSections #-}
 
 -- | Small folds and traversals used by the higher-level packages.
 -- This module is the canonical target of the link-cache bench
@@ -16,11 +13,11 @@ module Demo.Core.Util
   , describe
   ) where
 
-import Data.Foldable (foldl', toList)
+import Data.Foldable (foldl')
 
 -- | Strict left fold over any 'Foldable'.
 foldStrict :: Foldable t => (b -> a -> b) -> b -> t a -> b
-foldStrict f z xs = foldl' f z (toList xs)
+foldStrict f z xs = foldl' f z xs
 {-# INLINE foldStrict #-}
 
 -- | True iff every element satisfies the predicate.

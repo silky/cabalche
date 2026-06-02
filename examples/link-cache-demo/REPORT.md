@@ -50,7 +50,7 @@ do not poison iteration N+1.
 | add-unexported | appends a new private `_bench…` binding; underscore-prefixed unused bindings are dropped at `-O1` → 9/9. |
 | add-exported | extends the export list. `Util.hi` grows; GHC may force downstream importers to recompile even when they don't use the new symbol. Expected: HITs only on packages that don't import `Util`. |
 | modify-type | tightens `describe`'s constraint. Downstream importers of `describe` must recompile → cascade MISS. |
-| refactor-internal | private `firstOf`→`headOf` rename. `Util.o` differs but `Util.hi` doesn't, so downstream `.o` files stay byte-stable. Expected: 6 HITs (middle libs) + 3 MISSes (demo-core×2 + exe — exe key includes demo-core.a bytes). |
+| refactor-internal | private `firstOf`→`headOf` rename. `Util.o` differs but `Util.hi` doesn't, so downstream `.o` files stay byte-stable. Expected: 6 HITs (middle libs) + 3 misses (demo-core×2 + exe — exe key includes demo-core.a bytes). |
 | whitespace-only | append a blank line to `Util.hs`. Lexer should drop it → `Util.o` byte-equal → 9/9. |
 | comment-only | append a `--` comment line. Same expectation as whitespace-only → 9/9. |
 | reorder-exports | swap two adjacent exports without adding/removing any. GHC canonicalises the export order for the ABI hash, so `Util.hi` should be byte-equal → 9/9. |
@@ -140,7 +140,7 @@ wins stratify by the edit's effect on the touched module's
   touched library's bytes via `linkDepArchives`) MISS.
 - Edits that change the `.hi` (add-exported, modify-type)
   force GHC to recompile downstream importers; their `.o` files
-  come out fresh, so the link cone above the change MISSes.
+  come out fresh, so the link cone above the change misses.
   Cache wins are confined to packages that don't import the
   touched module at all.
 - `reorder-exports` is a positive control: GHC canonicalises

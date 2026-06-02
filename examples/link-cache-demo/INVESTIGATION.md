@@ -203,8 +203,8 @@ That extra entry (118 bytes including the `:` separator) grows
 `.dynstr` by exactly the size delta we observed. Every subsequent
 section in the `.so` shifts by that amount; `.gnu.hash` re-hashes
 `.dynstr`'s new contents; the resulting `.so` differs from the
-cached blob in the offsets, the headers, the rela tables, and the
-hash. The 25 % byte delta is the propagation of one extra RUNPATH
+cached blob in the offsets, the headers, the relocation tables,
+and the hash. The 25 % byte delta is the propagation of one extra RUNPATH
 entry through the rest of the layout.
 
 In cold-populate the target `.so` doesn't exist yet — first build —
@@ -266,14 +266,14 @@ would let cabal stop having to `unlink` manually.
 expectation was 9/9 for these (lexer drops whitespace and comments,
 GHC canonicalises export order).
 
-The MISSes happen because GHC's `.o` files embed source line
+The misses happen because GHC's `.o` files embed source line
 numbers (and possibly source file fingerprints) for use in error
 messages and `HasCallStack`. A blank line inserted in `Util.hs`
 shifts every subsequent line number; `Util.o`'s embedded
 line-number table changes; `Util`'s `.hi` references those line
 numbers in its source-location metadata; downstream importers
 re-hash; their `.o` files come out byte-different; their `.a`
-keys change; cache MISSes.
+keys change; cache misses.
 
 This is consistent with the surprise that `demo-codec.{a,so}` HITs
 in these scenarios (it doesn't import `Util`) but `demo-graph.a/so`
@@ -290,7 +290,7 @@ position-information changes that shouldn't matter semantically.
   generalise across edit shapes that are "no-op + line shift".
 - **Cheaper alternative:** include `.hi` ABI fingerprints alongside
   `.o` digests, weighted to dominate when the `.hi` is byte-stable.
-  This wouldn't actually flip the bench's MISSes (the `.o` files
+  This wouldn't actually flip the bench's misses (the `.o` files
   really do differ), but it would let downstream consumers decide
   to bypass relink when interface stability is provable.
 
@@ -398,7 +398,7 @@ the exe forced to `skipped`) HITs out of the cone, because the
 touched module's `.o` differs from baseline even though its `.hi`
 doesn't — line numbers shifted in source, line-number tables
 shifted in `.o`. The cache faithfully sees those `.o`s as different
-inputs and MISSes the upstream archive links. Two ways forward:
+inputs and misses the upstream archive links. Two ways forward:
 
 - **Canonical `.o` hashing.** Add a `hashInputCanonical` variant
   that strips `.debug_*`, source-file fingerprints, and similar
@@ -409,7 +409,7 @@ inputs and MISSes the upstream archive links. Two ways forward:
   stripped stream). Closes Finding 3.
 - **Cheap alternative.** Include `.hi` ABI fingerprints alongside
   `.o` digests in the cache key. This wouldn't flip the current
-  bench's MISSes (the `.o`s really differ), but it would let
+  bench's misses (the `.o`s really differ), but it would let
   downstream consumers decide to bypass the relink when interface
   stability is provable.
 

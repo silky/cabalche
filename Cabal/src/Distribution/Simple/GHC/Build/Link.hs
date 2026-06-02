@@ -417,15 +417,18 @@ linkLibrary buildTargetDir cleanedExtraLibDirs verbosity runGhcProg lib lbi clbi
               profObjectFiles
       ProfDynWay -> do
         withSkippableLink verbosity (linkCtx "ghc-shared-prof") (i profSharedLibFilePath) (map i profDynamicObjectFiles) $
-          runGhcProg $ ghcProfSharedLinkArgs profDynamicObjectFiles
+          runGhcProg $
+            ghcProfSharedLinkArgs profDynamicObjectFiles
       DynWay -> do
         withSkippableLink verbosity (linkCtx "ghc-shared") (i sharedLibFilePath) (map i dynamicObjectFiles) $
-          runGhcProg $ ghcSharedLinkArgs dynamicObjectFiles
+          runGhcProg $
+            ghcSharedLinkArgs dynamicObjectFiles
         -- The .gbc files were built with DynWay if both are enabled.
         when (withBytecodeLib lbi) $ do
           bytecodeObjectFiles <- getObjBytecodeWayFiles DynWay
           withSkippableLink verbosity (linkCtx "ghc-bytecode-dyn") (i bytecodeLibFilePath) (map i bytecodeObjectFiles) $
-            runGhcProg $ ghcBytecodeLinkArgs bytecodeObjectFiles
+            runGhcProg $
+              ghcBytecodeLinkArgs bytecodeObjectFiles
       StaticWay -> do
         when (withVanillaLib lbi) $ do
           withSkippableLink verbosity (linkCtx "ar-static") (i vanillaLibFilePath) (map i staticObjectFiles) $
@@ -441,13 +444,15 @@ linkLibrary buildTargetDir cleanedExtraLibDirs verbosity runGhcProg lib lbi clbi
                 staticObjectFiles
         when (withStaticLib lbi) $ do
           withSkippableLink verbosity (linkCtx "ghc-staticlib") (i staticLibFilePath) (map i staticObjectFiles) $
-            runGhcProg $ ghcStaticLinkArgs staticObjectFiles
+            runGhcProg $
+              ghcStaticLinkArgs staticObjectFiles
         -- The .gbc files were built with `DynWay` if `DynWay` is enabled. Otherwise (this case),
         -- the files are produced alongside `StaticWay`.
         when (withBytecodeLib lbi && (DynWay `notElem` wantedWays)) $ do
           bytecodeObjectFiles <- getObjBytecodeWayFiles StaticWay
           withSkippableLink verbosity (linkCtx "ghc-bytecode-static") (i bytecodeLibFilePath) (map i bytecodeObjectFiles) $
-            runGhcProg $ ghcBytecodeLinkArgs bytecodeObjectFiles
+            runGhcProg $
+              ghcBytecodeLinkArgs bytecodeObjectFiles
 
   -- ROMES: Why exactly branch on staticObjectFiles, rather than any other build
   -- kind that we might have wanted instead?
@@ -512,8 +517,13 @@ linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhc
   -- on `Main.hs` alone -- and the exe would HIT against a stale
   -- baseline blob across every downstream-lib change. Detect this
   -- and force-skip the cache for those exe links.
-  let hasHsInputs = any (\p -> FP.takeExtension p == ".hs"
-                            || FP.takeExtension p == ".lhs") linkSrcs
+  let hasHsInputs =
+        any
+          ( \p ->
+              FP.takeExtension p == ".hs"
+                || FP.takeExtension p == ".lhs"
+          )
+          linkSrcs
       baseCtx =
         LinkContext
           { lcTool = "ghc-link-exe"
@@ -854,11 +864,11 @@ entirely.
 
 Why each tool is safe:
 
-* 'ar' is forced byte-stable by 'Distribution.Simple.Program.Ar.wipeMetadata',
+\* 'ar' is forced byte-stable by 'Distribution.Simple.Program.Ar.wipeMetadata',
   which scrubs timestamps and uids from archive members.
-* 'ghc -shared' / 'ghc -staticlib' / 'ghc -bytecodelib' are deterministic
+\* 'ghc -shared' / 'ghc -staticlib' / 'ghc -bytecodelib' are deterministic
   on a given toolchain when the input object files are byte-equal.
-* 'ghc -o' for executables emits an RPATH derived from the output path
+\* 'ghc -o' for executables emits an RPATH derived from the output path
   and a '--build-id' hash of inputs. Both are stable when the inputs
   are stable. For executables we additionally include the dep package
   '.a'/'.so' files (resolved by 'linkDepArchives') so that a
@@ -890,20 +900,20 @@ quietly-incomplete input set.
 Env vars (see 'Distribution.Simple.GHC.LinkManifest' for the
 authoritative list):
 
-* @CABAL_LINK_CACHE_DISABLE=1@ — bypass entirely (no read, no write).
-* @CABAL_LINK_CACHE_DIR=\/path@ — override the cache root.
-* @CABAL_LINK_CACHE_MAX_BYTES=N@ — size cap (default 5 GiB). On a
+\* @CABAL_LINK_CACHE_DISABLE=1@ — bypass entirely (no read, no write).
+\* @CABAL_LINK_CACHE_DIR=\/path@ — override the cache root.
+\* @CABAL_LINK_CACHE_MAX_BYTES=N@ — size cap (default 5 GiB). On a
   miss-with-write the oldest blobs are evicted until under cap.
-* @CABAL_LINK_CACHE_NO_STAT=1@ — disable the @(size, mtime, inode)@-based
+\* @CABAL_LINK_CACHE_NO_STAT=1@ — disable the @(size, mtime, inode)@-based
   short-circuit; force a full xxh64 read of every input on every link.
-* @CABAL_LINK_CACHE_NO_STATS=1@ — don't append hit\/miss telemetry to
+\* @CABAL_LINK_CACHE_NO_STATS=1@ — don't append hit\/miss telemetry to
   @.stats.jsonl@ under the cache root.
-* @CABAL_LINK_CACHE_VERIFY=1@ — canary mode: on a hit, re-run the
+\* @CABAL_LINK_CACHE_VERIFY=1@ — canary mode: on a hit, re-run the
   linker and bytewise-compare its output against the cached blob.
   Mismatches are reported and dumped under @divergences\/\<key\>\/@
   for offline inspection. Trades the cache speedup for a determinism
   check; never the default.
-* @CABAL_LINK_CACHE_VERIFY_FAIL=1@ — combined with the above,
+\* @CABAL_LINK_CACHE_VERIFY_FAIL=1@ — combined with the above,
   escalates a verification mismatch to a hard build error rather
   than a log message.
 -}
@@ -920,9 +930,12 @@ mkLinkToolchainId lbi =
       progDb = withPrograms lbi
       pathOf p = maybe "?" programPath (lookupProgram p progDb)
    in prettyShow (compilerId comp)
-        <> "|ghc=" <> pathOf ghcProgram
-        <> "|ld=" <> pathOf ldProgram
-        <> "|ar=" <> pathOf arProgram
+        <> "|ghc="
+        <> pathOf ghcProgram
+        <> "|ld="
+        <> pathOf ldProgram
+        <> "|ar="
+        <> pathOf arProgram
 
 -- | Resolve the on-disk paths of dep-package archives ghc will pull in
 -- via @-package-id@, for use as link-cache key inputs for the
@@ -982,7 +995,7 @@ linkDepArchives lbi linkOpts = do
         ]
   searchedFromLibs <- concat <$> traverse (listMatching uidStrings libExts) libSearchDirs
   searchedFromBuild <- walkMatching uidStrings libExts searchRoot
-  let foundCandidates = nub (ipiPaths ++ searchedFromLibs ++ searchedFromBuild)
+  let foundCandidates = ordNub (ipiPaths ++ searchedFromLibs ++ searchedFromBuild)
   found <- filterM doesFileExist foundCandidates
   let foundNames = map FP.takeFileName found
       matched s = any (s `isInfixOf`) foundNames
@@ -1013,13 +1026,13 @@ linkDepArchives lbi linkOpts = do
       where
         maxDepth = 8
         skipDir n = case n of
-          ""           -> True
-          ('.' : _)    -> True
-          "autogen"    -> True
-          "doc"        -> True
-          "src"        -> True
-          "tmp"        -> True
-          _            -> False
+          "" -> True
+          ('.' : _) -> True
+          "autogen" -> True
+          "doc" -> True
+          "src" -> True
+          "tmp" -> True
+          _ -> False
         go depth dir
           | depth > maxDepth = return []
           | otherwise = do

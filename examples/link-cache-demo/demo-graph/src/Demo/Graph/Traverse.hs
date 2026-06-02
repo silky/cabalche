@@ -1,6 +1,4 @@
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE LambdaCase #-}
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -12,9 +10,10 @@ module Demo.Graph.Traverse
   , isAcyclic
   ) where
 
-import           Control.Monad             (foldM, unless, when)
+import           Control.Monad             (foldM)
 import           Control.Monad.State.Strict (State, evalState, gets, modify')
 import qualified Data.Map.Strict           as Map
+import           Data.Maybe                (isJust)
 import qualified Data.Set                  as Set
 import           Data.Set                  (Set)
 
@@ -30,7 +29,7 @@ dfsFrom start g = reverse (evalState (go start) Set.empty)
     go u = do
       seen <- gets (Set.member u)
       if seen
-        then gets Set.toList >>= \_ -> pure []
+        then pure []
         else do
           modify' (Set.insert u)
           rec' <- traverse (\(v, _) -> go v) (neighbours u g)
@@ -79,4 +78,4 @@ topoSort g = evalState (kahn roots) initial
           pure (if d' == 0 then v : acc else acc)
 
 isAcyclic :: Graph -> Bool
-isAcyclic = maybe False (const True) . topoSort
+isAcyclic = isJust . topoSort
