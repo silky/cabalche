@@ -1,0 +1,39 @@
+cabal-version:      2.4
+name:               demo-engine
+version:            0.1.0.0
+synopsis:           Orchestration tying codec + graph together.
+license:            BSD-3-Clause
+build-type:         Simple
+
+common opts
+  default-language:   Haskell2010
+  ghc-options:        -Wall -Wno-unused-imports
+
+library
+  import:             opts
+  hs-source-dirs:     src
+  build-depends:      base       >=4.18 && <5
+                    , bytestring
+                    , containers
+                    , demo-codec
+                    , demo-core
+                    , demo-graph
+                    , text
+  exposed-modules:
+      Demo.Engine.Pipeline
+      Demo.Engine.Run
+
+test-suite demo-engine-test
+  import:             opts
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Main.hs
+  build-depends:      base
+                    , bytestring
+                    , demo-codec
+                    , demo-core
+                    , demo-engine
+                    , demo-graph
+                    , tasty
+                    , tasty-hunit
+                    , text
