@@ -28,8 +28,10 @@ cabal test  all --project-file=examples/link-cache-demo/cabal.project
 ## Benchmarking the link cache
 
 `scripts/link-cache-demo-bench.sh` drives this project through five
-edit shapes that span the cache's best- and worst-case behaviour, and
-writes the results to `REPORT.md` here.
+edit shapes the cache has never seen before — each timed cache-on
+build starts from a cache pre-populated with only the *baseline*
+link outputs, so the measurement reflects what a developer making a
+real first-time edit experiences. Results land in `REPORT.md` here.
 
 ```sh
 scripts/link-cache-demo-bench.sh --cabal=/path/to/forked/cabal

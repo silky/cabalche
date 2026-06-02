@@ -23,55 +23,83 @@ demo-codec   demo-graph
 scripts/link-cache-demo-bench.sh --cabal=/home/noon/dev/ext/cabal/result-opt/bin/cabal --runs=3
 ```
 
+## What this measures
+
+A **novel-edit** rebuild. Per scenario:
+
+1. The cache is pre-populated with the *baseline* link outputs
+   (no perturbation applied) and snapshotted.
+2. Each timed cache-on build starts from a cache that has only
+   ever seen the baseline. The scenario edit is then applied,
+   so every link operation that depends on the edited bytes
+   MISSes. Links whose inputs are byte-stable across the edit
+   HIT from the baseline snapshot.
+3. The cache is reset from the snapshot **before every**
+   cache-on iteration, so the perturbed-state blobs written
+   by iteration N do not poison iteration N+1.
+
+This is the workload a developer running an edit-rebuild loop
+actually experiences: each edit is something the cache has never
+seen before. The point of the bench is to measure how much of
+the link cascade the cache can short-circuit anyway, because the
+*unchanged* parts of the cone still match the baseline blobs.
+
+## How the cache should behave per scenario
+
+The demo builds 9 link outputs: `libHS<pkg>.a` + `libHS<pkg>.so`
+for each of `demo-core`, `demo-codec`, `demo-graph`, `demo-engine`,
+plus the `demo-app` executable.
+
+| scenario | rationale (a priori) |
+|---|---|
+| body-stable | wraps `every`'s body in a no-op `let`. At `-O1` GHC dead-code-eliminates the binding, so `Util.o` should come out *byte-equal* to baseline and **every** link in the cascade HITs. |
+| add-unexported | appends a new private binding starting with `_`. GHC drops unused bindings whose names begin with underscore at `-O1`, so `Util.o` is byte-equal and the cascade HITs. |
+| refactor-internal | renames a where-bound helper (`firstOf`→`headOf`). `Util.o` differs (different internal symbol names), but `Util`'s `.hi` is unchanged so downstream `.o` files are byte-stable. Expected: 6 HITs (middle libs) / 3 MISSes (demo-core.a, demo-core.so, demo-app exe — exe key includes demo-core.a's new bytes via `linkDepArchives`). |
+| add-exported | extends `Demo.Core.Util`'s export list. `Util.hi` grows; GHC's recompilation check may force downstream modules that import `Util` to be recompiled (`demo-graph.Traverse`, `demo-engine.Pipeline`). HITs limited to packages that don't import `Util` (`demo-codec`). |
+| modify-type | tightens `describe`'s constraint from `Show a =>` to `(Show a, Eq a) =>`. `demo-engine.Pipeline` uses `describe` → forced recompile → `demo-engine`'s link inputs differ → MISS. `demo-codec` and most of `demo-graph` are unaffected; HITs come from there. |
+
 ## Results
 
 - `cabal`     : /home/noon/dev/ext/cabal/result-opt/bin/cabal
 - `runs`      : 3
-- `noop floor`: 0.058s (cabal plan + scan with cache off,
-  no edit; this overhead is inherited by every other row)
+- `noop floor`: 0.040s (cabal plan + scan, no edit; inherited by every row below)
 
-| scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS |
-|---|---:|---:|---:|---:|---:|---:|
-| body-stable | 1.382 | 0.643 | 0.739 | 53.5% | 27 | 0 |
-| add-unexported | 1.377 | 0.647 | 0.730 | 53.0% | 27 | 0 |
-| add-exported | 2.303 | 0.965 | 1.338 | 58.1% | 27 | 0 |
-| modify-type | 2.497 | 1.174 | 1.323 | 53.0% | 25 | 2 |
-| refactor-internal | 1.571 | 0.678 | 0.893 | 56.8% | 27 | 0 |
+| scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| body-stable | 1.352 | 0.628 | 0.724 | 53.6% | 27 | 0 | 9.0 / 9 |
+| add-unexported | 1.350 | 0.645 | 0.705 | 52.2% | 27 | 0 | 9.0 / 9 |
+| add-exported | 2.339 | 1.593 | 0.746 | 31.9% | 9 | 18 | 3.0 / 9 |
+| modify-type | 2.346 | 1.682 | 0.664 | 28.3% | 9 | 18 | 3.0 / 9 |
+| refactor-internal | 1.410 | 0.780 | 0.630 | 44.7% | 18 | 9 | 6.0 / 9 |
 
-## Raw
-
-Per-scenario JSON in `.bench-results.jsonl`.
+Per-scenario raw JSON in `.bench-results.jsonl`.
 
 ## Interpretation
 
-What the bench measures: the populate step builds the project
-with the scenario edit applied and the link cache enabled,
-so the perturbed-state linker outputs are recorded as blobs.
-Each iteration then restores the file, syncs `dist-newstyle`
-back to baseline, re-applies the same edit, and times the
-rebuild. With content-deterministic GHC the re-applied edit
-produces the same `.o` files as the populate, so the link
-cache HITs the whole cascade -- regardless of whether the
-edit shape would or would not have invalidated downstream
-compilation on a first-time build.
+The **`HIT/build`** column is the headline: how many of the 9
+link operations the cache saved on a build the developer had
+never run before.
 
-This shape is the realistic *cache* workload: returning to a
-previously-built configuration (branch switches, repeat CI
-runs, edit-then-revert-then-redo). It is **not** a measurement
-of the first-time cost of a novel edit -- that workload
-doesn't hit the cache at all.
+On this project, novel-edit cache wins clearly stratify by
+edit shape:
 
-What to read off the table:
+- **`body-stable` and `add-unexported`** — GHC at `-O1` makes
+  the edit byte-invisible at the object-file level. Every link
+  in the cone HITs, and the bench measures pure linker savings.
+- **`refactor-internal`** — the touched module's `.o` changes,
+  but the rename is in a `where` clause and doesn't appear in
+  the `.hi`. Downstream `.o` files are byte-stable, so middle
+  libraries HIT; only `demo-core` and the exe (which links
+  against the new `demo-core.a` bytes) MISS.
+- **`add-exported` and `modify-type`** — these change `Util.hi`,
+  which forces GHC to recompile downstream importers.
+  Their `.o` files come out with fresh bytes, so the link
+  cone above the change MISSes. Cache wins are limited to
+  the packages that don't import `Util` at all (`demo-codec`,
+  partially `demo-graph`).
 
-- `cache off` is the linker work the cache is trying to avoid.
-  Larger rebuild cones (`add-exported`, `modify-type`) take
-  longer because they recompile more downstream modules, and
-  the link cone they feed into is the same five-package
-  cascade as the smaller scenarios.
-- `saved` and `speedup` are the headline numbers: the wall-
-  clock seconds the cache shaves off a rebuild that has been
-  through this exact state before.
-- `HIT` / `MISS` come from `.stats.jsonl` under the per-
-  scenario cache directory; 9 link operations per build (4
-  libraries × {static archive, shared lib} + 1 executable),
-  so 3 runs × 9 = 27 expected HITs per scenario.
+The takeaway is that the cache delivers real, partial-cascade
+savings even on a first-time edit. The exact partition (which
+links HIT, which MISS) depends on the dep graph shape and where
+the edit lands — but it is structurally predictable from the
+edit's effect on the `.hi`.
