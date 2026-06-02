@@ -73,11 +73,11 @@ main = setupTest $ recordMode DoNotRecord $ do
     liftIO $ planetDivergentBlobs cacheDir
     liftIO $ removeLinkOutputs buildRoot
 
-    -- VERIFY_FAIL=1 escalates the divergence to a build error. The
-    -- existing assertOutputContains pattern doesn't have a "must
-    -- fail" predicate; we use shouldFail with setup'.
+    -- VERIFY_FAIL=1 escalates the divergence to a build error.
+    -- `fails` flips the test's "expected exit" so a non-zero exit
+    -- becomes the success case.
     failResult <-
-      shouldFail $
+      fails $
         withEnv
           [ ("CABAL_LINK_CACHE_VERIFY", Just "1")
           , ("CABAL_LINK_CACHE_VERIFY_FAIL", Just "1")

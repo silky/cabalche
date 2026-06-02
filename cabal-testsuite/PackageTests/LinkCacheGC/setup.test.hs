@@ -37,27 +37,21 @@ main = setupTest $ recordMode DoNotRecord $ do
     -- miss-with-write. We aim for slightly under one blob's worth.
     let cap = max 1 (preTotal `div` max 1 (fromIntegral preCount + 1))
 
-    -- Bust the exe's link key by editing Main.hs (the source-level
-    -- edit forces GHC to recompile and the link inputs change).
-    -- The library archives stay byte-identical so only the exe
-    -- link writes a fresh blob.
-    liftIO $ writeFile (testCurrentDir env </> "app" </> "Main.hs") $
+    -- Bust the library's link key by editing Lib.M0 (forces GHC
+    -- to recompile M0 and the lib's ar/ghc-shared link inputs to
+    -- change). The exe link is in `--make` mode, so the cache
+    -- skips it; we deliberately touch the library, whose links the
+    -- cache does manage.
+    liftIO $ writeFile (testCurrentDir env </> "src" </> "Lib" </> "M0.hs") $
       unlines
-        [ "module Main where"
+        [ "module Lib.M0 where"
         , ""
-        , "import Lib.M0 (x0)"
-        , "import Lib.M1 (x1)"
-        , "import Lib.M2 (x2)"
-        , "import Lib.M3 (x3)"
-        , ""
-        , "main :: IO ()"
-        , "main = do"
-        , "  putStrLn \"second build\""
-        , "  print (x0 + x1 + x2 + x3)"
+        , "x0 :: Int"
+        , "x0 = 42"
         ]
 
-    -- Second build with the tight cap. The new exe blob triggers
-    -- enforceSizeCap, which has to evict older entries.
+    -- Second build with the tight cap. The new library blob
+    -- triggers enforceSizeCap, which has to evict older entries.
     withEnv
       [ ("CABAL_LINK_CACHE_DIR", Just cacheDir)
       , ("CABAL_LINK_CACHE_MAX_BYTES", Just (show cap))

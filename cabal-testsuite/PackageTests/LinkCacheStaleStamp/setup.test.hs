@@ -10,6 +10,7 @@ import Test.Cabal.Prelude
 
 import qualified Data.ByteString as BS
 import Data.List (isPrefixOf, isSuffixOf)
+import Data.Traversable (for)
 import System.Directory
   ( doesDirectoryExist
   , doesFileExist
