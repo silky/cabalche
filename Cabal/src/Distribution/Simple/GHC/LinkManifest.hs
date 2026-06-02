@@ -19,16 +19,15 @@ import Control.Concurrent (forkIO, getNumCapabilities)
 import Control.Concurrent.MVar (newEmptyMVar, putMVar, takeMVar)
 import Control.Concurrent.QSem (newQSem, signalQSem, waitQSem)
 import Control.Exception (bracket, bracket_, try)
-import GHC.IO.Handle.Lock (LockMode (..), hTryLock)
 import Control.Monad (forM, forM_)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import Data.IORef (IORef, atomicModifyIORef', modifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
-import System.IO.Unsafe (unsafePerformIO)
 import Data.Time.Clock (UTCTime, diffUTCTime, getCurrentTime)
 import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
+import GHC.IO.Handle.Lock (LockMode (..), hTryLock)
 import System.Directory
   ( XdgDirectory (..)
   , copyFile
@@ -45,6 +44,7 @@ import System.Directory
 import System.Environment (lookupEnv)
 import System.FilePath (replaceExtension, takeDirectory, takeFileName, (</>))
 import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, openBinaryFile, openBinaryTempFile, withFile)
+import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Data.Digest.XXHash.FFI as XXH
 import Distribution.Simple.Utils (die', info, noticeNoWrap)
@@ -117,9 +117,10 @@ getSessionStatRefs indexPath = do
   -- 'StatIndex' values; we wrap a fresh local pair of refs that
   -- reads from / writes back to it, so the rest of the code keeps
   -- the same indexRef / dirtyRef shape.
-  ixRef <- newIORef =<< do
-    s <- readIORef sessionStatIndex
-    return $ Just (maybe Map.empty fst (Map.lookup indexPath s))
+  ixRef <-
+    newIORef =<< do
+      s <- readIORef sessionStatIndex
+      return $ Just (maybe Map.empty fst (Map.lookup indexPath s))
   dirtyRef <- newIORef False
   -- We rely on 'flushStatIndex' (called by the existing code) to
   -- write back through 'writeStatIndex' below; that function also
@@ -152,7 +153,8 @@ publishStatIndex indexPath ix =
 -- @(size, mtime)@ check there, matching the prior behaviour.
 type StatIndex = Map.Map FilePath StatEntry
 
-type StatEntry = (Integer, String, Integer, String)
+type StatEntry =
+  (Integer, String, Integer, String)
   -- ^ @(size, mtime_picos, inode, hash_hex)@
 
 -- | Sidecar filename relative to the cache root. The version suffix
@@ -257,8 +259,13 @@ withSkippableLink verbosity ctx target inputs action = do
     (Just s, _) | not (null s) -> action'
     (_, Just r) -> do
       noticeNoWrap verbosity $
-        "[link-cache] SKIPPED (" <> lcTool ctx <> ") " <> target
-          <> ": " <> r <> "\n"
+        "[link-cache] SKIPPED ("
+          <> lcTool ctx
+          <> ") "
+          <> target
+          <> ": "
+          <> r
+          <> "\n"
       t0 <- getCurrentTime
       action'
       t1 <- getCurrentTime
@@ -302,6 +309,9 @@ cachedLink verbosity ctx target inputs action = do
   t1 <- getCurrentTime
   appendStatsSilently target (lcTool ctx) outcome inputs t0 t1
 
+-- | Inner cache lookup-and-write path; can throw 'IOException' on
+-- I/O failure. 'cachedLink' wraps this in a catch and degrades to
+-- running the underlying link action when the cache is unavailable.
 cachedLinkUnsafe :: Verbosity -> LinkContext -> FilePath -> [FilePath] -> IO () -> IO StatsOutcome
 cachedLinkUnsafe verbosity ctx target inputs action = do
   let tool = lcTool ctx
@@ -312,23 +322,8 @@ cachedLinkUnsafe verbosity ctx target inputs action = do
   let useStat = case noStat of
         Just s | not (null s) -> False
         _ -> True
-#if defined(mingw32_HOST_OS)
-  -- 'fileInode' returns 0 on Windows (no inode equivalent without
-  -- 'GetFileInformationByHandle'), so the @(size, mtime, inode)@
-  -- stat-key degrades to @(size, mtime)@. That is strictly weaker
-  -- than the POSIX version against tar-style restore patterns that
-  -- preserve mtime. Notice this once per process so the user can
-  -- choose to disable the short-circuit (CABAL_LINK_CACHE_NO_STAT=1)
-  -- if it is a concern.
-  when useStat $
-    noticeOnce verbosity "WINDOWS_STAT_DEGRADED" $
-      "[link-cache] note: stat short-circuit on Windows is (size, mtime)-only "
-        <> "(no inode); set CABAL_LINK_CACHE_NO_STAT=1 to disable it."
-#endif
-  (indexRef, dirtyRef) <-
-    if useStat
-      then getSessionStatRefs indexPath
-      else (,) <$> newIORef (Nothing :: Maybe StatIndex) <*> newIORef False
+  noticeWindowsStatDegradation verbosity useStat
+  (indexRef, dirtyRef) <- newStatRefs useStat indexPath
   let hashOne p
         | useStat = hashInputCached indexRef dirtyRef indexPath p
         | otherwise = hashInput p
@@ -347,8 +342,9 @@ cachedLinkUnsafe verbosity ctx target inputs action = do
     then do
       verifyMode <- lookupEnv "CABAL_LINK_CACHE_VERIFY"
       case verifyMode of
-        Just s | not (null s) ->
-          verifyHit verbosity tool target action blobPath cacheDir key
+        Just s
+          | not (null s) ->
+              verifyHit verbosity tool target action blobPath cacheDir key
         _ -> do
           -- Common case on repeated builds: target on disk is already
           -- byte-equal to the blob (the stamp sidecar records which
@@ -361,8 +357,9 @@ cachedLinkUnsafe verbosity ctx target inputs action = do
           -- cache acting on every build, not just with -v.
           alreadyCorrect <- targetMatchesStamp target key
           if alreadyCorrect
-            then noticeNoWrap verbosity $
-              "[link-cache] HIT (already-current) (" <> tool <> ") " <> target <> "\n"
+            then
+              noticeNoWrap verbosity $
+                "[link-cache] HIT (already-current) (" <> tool <> ") " <> target <> "\n"
             else do
               noticeNoWrap verbosity $
                 "[link-cache] HIT (" <> tool <> ") " <> target <> "\n"
@@ -396,6 +393,36 @@ linkCacheDir = do
       base <- getXdgDirectory XdgCache "cabal"
       return (base </> "link-cache")
 
+-- | On Windows, 'fileInode' returns 0 (no inode equivalent without
+-- 'GetFileInformationByHandle'), so the @(size, mtime, inode)@
+-- stat-key degrades to @(size, mtime)@. That is strictly weaker
+-- than the POSIX version against tar-style restore patterns that
+-- preserve mtime. Notice this once per process so the user can
+-- choose to disable the short-circuit (CABAL_LINK_CACHE_NO_STAT=1)
+-- if it is a concern. No-op on non-Windows.
+noticeWindowsStatDegradation :: Verbosity -> Bool -> IO ()
+#if defined(mingw32_HOST_OS)
+noticeWindowsStatDegradation verbosity useStat =
+  when useStat $
+    noticeOnce verbosity "WINDOWS_STAT_DEGRADED" $
+      "[link-cache] note: stat short-circuit on Windows is (size, mtime)-only "
+        <> "(no inode); set CABAL_LINK_CACHE_NO_STAT=1 to disable it."
+#else
+noticeWindowsStatDegradation _ _ = return ()
+#endif
+
+-- | Allocate the stat-index refs used by the stat short-circuit
+-- path; with @useStat = False@ returns empty refs so callers can
+-- still thread them through 'hashInput' unchanged.
+newStatRefs
+  :: Bool
+  -> FilePath
+  -> IO (IORef (Maybe StatIndex), IORef Bool)
+newStatRefs useStat indexPath =
+  if useStat
+    then getSessionStatRefs indexPath
+    else (,) <$> newIORef (Nothing :: Maybe StatIndex) <*> newIORef False
+
 hashInput :: FilePath -> IO (FilePath, String)
 hashInput path = do
   bytes <- BS.readFile path
@@ -411,7 +438,7 @@ xxh64Hex :: BS.ByteString -> String
 xxh64Hex bs =
   let h = XXH.xxh64 bs 0
       raw = showHex h ""
-  in replicate (16 - length raw) '0' ++ raw
+   in replicate (16 - length raw) '0' ++ raw
 
 -- | On POSIX, the inode number from @stat()@. The stat short-circuit
 -- includes this in its key so that a peer process replacing the
@@ -493,7 +520,7 @@ hashInputCached indexRef dirtyRef indexPath path = do
   case Map.lookup path ix of
     Just (s, m, i, h)
       | s == size && m == mtimeStr && i == ino ->
-        return (takeFileName path, h)
+          return (takeFileName path, h)
     _ -> do
       bytes <- BS.readFile path
       let h = xxh64Hex bytes
@@ -517,11 +544,12 @@ readStatIndex p = do
     else do
       raw <- BS.readFile p
       let ls = BS8.lines raw
-      return $ Map.fromList
-        [ (p', (sz, mt, ino, h))
-        | line <- ls
-        , Just (p', sz, mt, ino, h) <- [parseStatLine line]
-        ]
+      return $
+        Map.fromList
+          [ (p', (sz, mt, ino, h))
+          | line <- ls
+          , Just (p', sz, mt, ino, h) <- [parseStatLine line]
+          ]
 
 -- | Accept the current five-field layout. Earlier four-field rows
 -- (no inode) are silently dropped and self-heal on the next link.
@@ -579,9 +607,15 @@ computeKey targetName tool toolchainId digests = showMD5 (md5 keyBytes)
   where
     keyBytes =
       BS8.pack $
-        "tool:" <> tool <> "\n"
-          <> "name:" <> targetName <> "\n"
-          <> "toolchain:" <> toolchainId <> "\n"
+        "tool:"
+          <> tool
+          <> "\n"
+          <> "name:"
+          <> targetName
+          <> "\n"
+          <> "toolchain:"
+          <> toolchainId
+          <> "\n"
           <> concatMap (\(b, h) -> h <> "  " <> b <> "\n") (sort digests)
 
 writeManifest :: FilePath -> String -> FilePath -> [(FilePath, String)] -> IO ()
@@ -796,14 +830,16 @@ parseStamp raw = do
           (v : _) -> Just v
           _ -> Nothing
   v <- pick "v"
-  if v /= "2" then Nothing else do
-    key <- pick "key"
-    szStr <- pick "size"
-    mt <- pick "mtime"
-    inoStr <- pick "inode"
-    sz <- readMaybe szStr
-    ino <- readMaybe inoStr
-    return (key, sz, mt, ino)
+  if v /= "2"
+    then Nothing
+    else do
+      key <- pick "key"
+      szStr <- pick "size"
+      mt <- pick "mtime"
+      inoStr <- pick "inode"
+      sz <- readMaybe szStr
+      ino <- readMaybe inoStr
+      return (key, sz, mt, ino)
 
 -- | Append a JSONL line summarising one cache invocation. Best-effort:
 -- any IOException is swallowed so telemetry never breaks a build.
@@ -846,12 +882,18 @@ appendStats target tool outcome inputs t0 t1 = do
           ms = realToFrac (diffUTCTime t1 t0) * 1000 :: Double
           line =
             "{"
-              <> "\"ts\":" <> show ts
-              <> ",\"tool\":" <> jsonStr tool
-              <> ",\"target\":" <> jsonStr target
-              <> ",\"outcome\":" <> jsonStr (outcomeWord outcome)
-              <> ",\"input_bytes\":" <> show totalBytes
-              <> ",\"ms\":" <> show (round ms :: Integer)
+              <> "\"ts\":"
+              <> show ts
+              <> ",\"tool\":"
+              <> jsonStr tool
+              <> ",\"target\":"
+              <> jsonStr target
+              <> ",\"outcome\":"
+              <> jsonStr (outcomeWord outcome)
+              <> ",\"input_bytes\":"
+              <> show totalBytes
+              <> ",\"ms\":"
+              <> show (round ms :: Integer)
               <> "}\n"
       -- O_APPEND is atomic for writes under PIPE_BUF on POSIX; each
       -- record is well under that, so concurrent builds writing to
@@ -917,7 +959,10 @@ verifyHit verbosity tool target action blobPath cacheDir key = do
   if not produced
     then do
       noticeNoWrap verbosity $
-        "[link-cache] HIT-DIVERGED (" <> tool <> ") " <> target
+        "[link-cache] HIT-DIVERGED ("
+          <> tool
+          <> ") "
+          <> target
           <> ": linker produced no output\n"
       return StatsHitDiverged
     else do
@@ -939,13 +984,22 @@ verifyHit verbosity tool target action blobPath cacheDir key = do
           atomicCopy blobPath (dumpDir </> "blob")
           atomicCopy target (dumpDir </> "linker")
           noticeNoWrap verbosity $
-            "[link-cache] HIT-DIVERGED (" <> tool <> ") " <> target
-              <> " (see " <> dumpDir <> ")\n"
+            "[link-cache] HIT-DIVERGED ("
+              <> tool
+              <> ") "
+              <> target
+              <> " (see "
+              <> dumpDir
+              <> ")\n"
           failHard <- lookupEnv "CABAL_LINK_CACHE_VERIFY_FAIL"
           case failHard of
-            Just s | not (null s) ->
-              die' verbosity $
-                "[link-cache] verification mismatch for "
-                  <> target <> " (tool=" <> tool <> ")"
+            Just s
+              | not (null s) ->
+                  die' verbosity $
+                    "[link-cache] verification mismatch for "
+                      <> target
+                      <> " (tool="
+                      <> tool
+                      <> ")"
             _ -> return ()
           return StatsHitDiverged
