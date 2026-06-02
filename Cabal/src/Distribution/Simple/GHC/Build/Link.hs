@@ -905,7 +905,7 @@ authoritative list):
 \* @CABAL_LINK_CACHE_MAX_BYTES=N@ — size cap (default 5 GiB). On a
   miss-with-write the oldest blobs are evicted until under cap.
 \* @CABAL_LINK_CACHE_NO_STAT=1@ — disable the @(size, mtime, inode)@-based
-  short-circuit; force a full xxh64 read of every input on every link.
+  short-circuit; force a full xxh3 read of every input on every link.
 \* @CABAL_LINK_CACHE_NO_STATS=1@ — don't append hit\/miss telemetry to
   @.stats.jsonl@ under the cache root.
 \* @CABAL_LINK_CACHE_VERIFY=1@ — canary mode: on a hit, re-run the

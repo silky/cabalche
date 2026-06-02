@@ -47,6 +47,7 @@ import System.IO (BufferMode (..), IOMode (..), hClose, hPutStr, hSetBuffering, 
 import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Data.Digest.XXHash.FFI as XXH
+import Data.Hashable (hashWithSalt)
 import Distribution.Simple.Utils (die', info, noticeNoWrap)
 import Distribution.Utils.MD5 (md5, showMD5)
 import Distribution.Verbosity (Verbosity)
@@ -176,7 +177,7 @@ statIndexName = ".stat-index.v2"
 -- * @CABAL_LINK_CACHE_MAX_BYTES=N@ caps cache size in bytes; on a write
 --   we evict oldest entries until under the cap (default 5 GiB).
 -- * @CABAL_LINK_CACHE_NO_STAT=1@ disables the stat-based short-circuit
---   on input hashing (forces a full read+xxh64 of every input file).
+--   on input hashing (forces a full read+xxh3 of every input file).
 -- * @CABAL_LINK_CACHE_NO_STATS=1@ disables the per-link telemetry append
 --   to @.stats.jsonl@ under the cache root.
 -- * @CABAL_LINK_CACHE_VERIFY=1@ enables canary mode: on a hit the
@@ -426,17 +427,24 @@ newStatRefs useStat indexPath =
 hashInput :: FilePath -> IO (FilePath, String)
 hashInput path = do
   bytes <- BS.readFile path
-  return (takeFileName path, xxh64Hex bytes)
+  return (takeFileName path, xxh3Hex bytes)
 
--- | XXH64 of the input bytes, rendered as a zero-padded 16-char hex
--- string. Roughly 5-10x faster than MD5 on modern CPUs, which is what
--- the cold-cache cost on a large dep cone is bottlenecked on. Not
--- cryptographically collision-resistant -- the cache is a trust-the-
--- user-not-an-attacker artefact anyway, and MD5 wouldn't be any
--- better in an adversarial scenario.
-xxh64Hex :: BS.ByteString -> String
-xxh64Hex bs =
-  let h = XXH.xxh64 bs 0
+-- | A stable 64-bit content digest of the input bytes, rendered as a
+-- zero-padded 16-char hex string. Backed by xxhash-ffi's XXH3 64-bit
+-- variant via the 'Hashable' instance on 'XXH.XXH3'. Roughly 5-10x
+-- faster than MD5 on modern CPUs, which is what the cold-cache cost
+-- on a large dep cone is bottlenecked on. Not cryptographically
+-- collision-resistant -- the cache is a trust-the-user-not-an-attacker
+-- artefact anyway, and MD5 wouldn't be any better in an adversarial
+-- scenario.
+xxh3Hex :: BS.ByteString -> String
+xxh3Hex bs =
+  -- 'hashWithSalt' returns the lower 64 bits of XXH3 as an 'Int';
+  -- 'fromIntegral' reinterprets the sign bit so negative 'Int's
+  -- become high-bit-set 'Word64's rather than getting a "-" prefix
+  -- from 'showHex'.
+  let h :: Word64
+      h = fromIntegral (hashWithSalt 0 (XXH.XXH3 bs))
       raw = showHex h ""
    in replicate (16 - length raw) '0' ++ raw
 
@@ -494,8 +502,8 @@ trySome :: IO a -> IO (Either SomeException a)
 trySome = try
 
 -- | Like 'hashInput', but consults a @(size, mtime, inode)@-keyed
--- sidecar index first. On a stat match the recorded xxh64 is reused
--- and the file's bytes are not read. On a miss we read+xxh64 the
+-- sidecar index first. On a stat match the recorded digest is reused
+-- and the file's bytes are not read. On a miss we read+hash the
 -- bytes and update the index in memory (with @dirtyRef@ flipped to
 -- 'True' so the on-disk index gets rewritten at the end of the link).
 --
@@ -523,7 +531,7 @@ hashInputCached indexRef dirtyRef indexPath path = do
           return (takeFileName path, h)
     _ -> do
       bytes <- BS.readFile path
-      let h = xxh64Hex bytes
+      let h = xxh3Hex bytes
       modifyIORef' indexRef (fmap (Map.insert path (size, mtimeStr, ino, h)))
       writeIORef dirtyRef True
       return (takeFileName path, h)
