@@ -60,19 +60,19 @@ do not poison iteration N+1.
 
 - `cabal`     : /home/noon/dev/ext/cabal/result-opt/bin/cabal
 - `runs`      : 3
-- `noop floor`: 0.040s (cabal plan + scan, no edit; inherited by every row below)
+- `noop floor`: 0.052s (cabal plan + scan, no edit; inherited by every row below)
 
 | scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 1.369 | 0.714 | 0.655 | 47.8% | 24 | 0 | 8.0 / 9 |
-| add-unexported | 1.411 | 0.729 | 0.682 | 48.3% | 24 | 0 | 8.0 / 9 |
-| add-exported | 2.344 | 2.383 | -0.039 | -1.7% | 6 | 18 | 2.0 / 9 |
-| modify-type | 2.475 | 2.401 | 0.074 | 3.0% | 6 | 18 | 2.0 / 9 |
-| refactor-internal | 1.735 | 1.154 | 0.581 | 33.5% | 15 | 9 | 5.0 / 9 |
-| whitespace-only | 1.647 | 1.065 | 0.582 | 35.3% | 15 | 9 | 5.0 / 9 |
-| comment-only | 2.014 | 1.320 | 0.694 | 34.5% | 15 | 9 | 5.0 / 9 |
-| reorder-exports | 1.810 | 1.110 | 0.700 | 38.7% | 15 | 9 | 5.0 / 9 |
-| edit-leaf-of-mid-lib | 1.345 | 1.023 | 0.322 | 23.9% | 3 | 9 | 1.0 / 9 |
+| body-stable | 2.066 | 1.388 | 0.678 | 32.8% | 24 | 0 | 8.0 / 9 |
+| add-unexported | 2.051 | 1.466 | 0.585 | 28.5% | 24 | 0 | 8.0 / 9 |
+| add-exported | 2.334 | 2.360 | -0.026 | -1.1% | 6 | 18 | 2.0 / 9 |
+| modify-type | 2.465 | 2.526 | -0.061 | -2.5% | 6 | 18 | 2.0 / 9 |
+| refactor-internal | 2.032 | 1.574 | 0.458 | 22.5% | 15 | 9 | 5.0 / 9 |
+| whitespace-only | 2.086 | 1.601 | 0.485 | 23.3% | 15 | 9 | 5.0 / 9 |
+| comment-only | 2.183 | 1.604 | 0.579 | 26.5% | 15 | 9 | 5.0 / 9 |
+| reorder-exports | 2.217 | 1.608 | 0.609 | 27.5% | 15 | 9 | 5.0 / 9 |
+| edit-leaf-of-mid-lib | 1.929 | 1.673 | 0.256 | 13.3% | 3 | 9 | 1.0 / 9 |
 
 ## Per-target outcomes
 
@@ -107,18 +107,19 @@ divergence is escalated to a hard build error.
 
 | scenario | verdict | detail |
 |---|---|---|
-| body-stable | diverged | 2 records |
-| add-unexported | diverged | 2 records |
+| body-stable | pass | verified=3 misses=5 |
+| add-unexported | pass | verified=3 misses=5 |
 | add-exported | pass | verified=0 misses=8 |
 | modify-type | pass | verified=0 misses=8 |
-| refactor-internal | diverged | 2 records |
-| whitespace-only | diverged | 2 records |
-| comment-only | diverged | 2 records |
-| reorder-exports | diverged | 2 records |
-| edit-leaf-of-mid-lib | diverged | 1 records |
+| refactor-internal | pass | verified=3 misses=5 |
+| whitespace-only | pass | verified=3 misses=5 |
+| comment-only | pass | verified=3 misses=5 |
+| reorder-exports | pass | verified=3 misses=5 |
+| edit-leaf-of-mid-lib | pass | verified=1 misses=3 |
 
-**7 scenario(s) failed the soundness check.**
-Build artifacts preserved in `/tmp/link-cache-demo-bench.8IbUnR` for inspection.
+All scenarios passed: every HIT reported by the cache produced
+byte-identical linker output. The HIT counts in the tables
+above are real cache wins, not false positives.
 
 Raw per-scenario JSON in `.bench-results.jsonl`.
 Raw per-(scenario, iter, target) outcomes in `.per-target.tsv`.

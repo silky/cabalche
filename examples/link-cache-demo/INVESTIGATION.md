@@ -17,25 +17,23 @@ The bench data referenced throughout is in
    effect on the touched module's `.hi`. Interface-stable edits HIT
    the entire cascade; interface-breaking edits cascade-MISS through
    the importers of the touched module.
-2. **The executable link's cache key is incomplete.** The manifest
-   for `demo-app`'s cache entry contains exactly one input:
-   `Main.hs`. None of the dep package archives are hashed in. As a
-   result `demo-app` HITs in *every* scenario the bench tested,
-   including ones where `demo-core.a` legitimately changed. This is
-   a soundness gap — the cache serves a stale exe.
-3. **GHC's `-shared` is not reproducible under partial rebuild.**
-   Cold-to-cold builds are bit-identical (verified across 27
-   artefacts), but the verify sweep (`CABAL_LINK_CACHE_VERIFY=1`)
-   shows `HIT-DIVERGED` on `*.so` outputs even when the `.o` inputs
-   match. The cache returns a *valid* linker output, just not the
-   one this build's linker would have produced. Functional builds
-   are fine; bit-reproducible builds are not.
-4. **Line-number shifts in source bust the `.o` byte-equality.**
-   `whitespace-only` and `comment-only` HIT 6/9 instead of 9/9
-   because adding/removing a line shifts every subsequent line
-   number, which appears in `.o` debug info, and downstream
-   importers re-hash. This is a class of cache wins that's
-   recoverable, with effort.
+2. **Two soundness gaps surfaced and were both fixed in this
+   branch.** (a) The executable link's cache key was incomplete —
+   the manifest for `demo-app` contained only `Main.hs`, no dep
+   archive bytes, so the exe HIT spuriously in every scenario where
+   the deps actually changed. Closed by force-skipping the cache
+   for exe links in `--make` mode. (b) The shared-library link
+   wasn't bit-reproducible — but only because `gcc -shared` / `ld`
+   auto-injects the output's containing directory into RUNPATH when
+   the output file already exists on disk. Closed by `unlink`ing
+   the target inside `withSkippableLink` before invoking the linker.
+   After both fixes, every scenario passes `CABAL_LINK_CACHE_VERIFY_FAIL=1`.
+3. **Line-number shifts in source bust the `.o` byte-equality.**
+   `whitespace-only` and `comment-only` HIT 5/8 instead of the
+   theoretical 8/8 because adding/removing a line shifts every
+   subsequent line number, which appears in `.o` debug info, and
+   downstream importers re-hash. This is a class of cache wins
+   that's recoverable, with effort.
 
 The rest of this document is the evidence.
 
@@ -165,56 +163,98 @@ The first is the minimal fix; the second is the more principled one.
 
 **Upstream filing.** Worth a Cabal bug report.
 
-## Finding 2: GHC `-shared` is not reproducible under incremental rebuild
+## Finding 2: linker auto-adds the target's directory to RUNPATH when the output already exists
 
-**Severity:** non-deterministic but functionally benign.
+**Severity:** soundness gap. **Fixed in this branch.**
 
 **Evidence.**
 
-- Two back-to-back **cold** builds (`rm -rf dist-newstyle && cabal build all`)
-  produce byte-identical `.o`, `.a`, `.so`, and exe files across all
-  27 artefacts. GHC + toolchain ARE deterministic in this setting.
-- The verify sweep, which does incremental rebuilds (sync to
-  baseline + apply scenario edit + link), produces `.so` files that
-  diverge from the cold-populate's `.so` files at the byte level.
-  Divergence in `body-stable`'s `demo-core.so`: same total size
-  (96472 bytes), 14742 differing bytes, first divergence at offset
-  209 (inside a program header's `p_filesz`), then scattered
-  through `.text`, `.dynstr`, `.rodata`, and `.symtab` sections.
-- The cached blob is a *valid* `.so` (correct symbols, runs as
-  expected). It's just not the same bytes the linker would produce
-  *right now*.
+- Two back-to-back **cold** builds produce byte-identical `.o`,
+  `.a`, `.so`, and exe files across all 27 artefacts. GHC and the
+  toolchain are deterministic *in isolation*.
+- Three back-to-back manual invocations of the exact `ghc -shared …`
+  command that cabal builds — with the same `-o` path — produce
+  byte-identical `.so` files. `ghc -shared` is deterministic *in
+  isolation*.
+- But the verify sweep, which does an incremental rebuild (sync to
+  baseline + apply scenario edit + relink), produces `.so` files
+  that differ from the cold-populate's blob by ~25 % of their
+  bytes. The cached blob is a valid linker output; the fresh blob
+  is a valid linker output. They just aren't *the same* output.
 
-**Why it likely happens.** Something about the incremental-rebuild
-state of GHC's compilation produces `.o` files that are byte-equal
-to the cold-build `.o`s for the same source under `-O1` (we
-confirmed `ar`-static of `demo-core.a` `HIT-VERIFIES` cleanly) but
-the subsequent `ghc -shared` invocation lays them out differently —
-likely an artefact of how GHC drives `gold` (the system linker is
-`gold 1.16` on this host, embedded in a `.note.gnu.gold-version`
-section). Section ordering inside the `.so`, dynamic-symbol-table
-ordering, or alignment-padding decisions in gold can vary
-run-to-run without affecting program semantics.
+**Root cause.** When `gcc -shared` / `ld` is asked to write to an
+output path that *already exists*, the linker adds the output's
+containing directory to the produced binary's RUNPATH. The exact
+diff in `body-stable`'s `demo-core.so`:
 
-**Cache-local fix (proposed).**
+```
+cold-populate RUNPATH (.dynstr=0xa6bb bytes):       verify-build RUNPATH (.dynstr=0xa731 bytes):
+  …/ghc-9.10.3-with-packages/…/lib/x86_64-linux-…    …/ghc-9.10.3-with-packages/…/lib/x86_64-linux-…
+  …/gmp-with-cxx-6.3.0/lib                            …/gmp-with-cxx-6.3.0/lib
+  …/elfutils-0.194/lib                                …/elfutils-0.194/lib
+  …/numactl-2.0.18/lib                                …/numactl-2.0.18/lib
+  …/libffi-3.5.2/lib                                  …/libffi-3.5.2/lib
+                                                      .../demo-core-0.1.0.0/build  ← NEW
+  …/glibc-2.42-61/lib                                 …/glibc-2.42-61/lib
+  …/gcc-15.2.0-lib/lib                                …/gcc-15.2.0-lib/lib
+```
 
-- **Strip non-deterministic sections before computing the cache
-  key.** Run a normalising pass over `.so` inputs/outputs (drop
-  `.note.gnu.*`, sort `.dynsym`, zero out alignment padding) and
-  hash the canonical form. The on-disk `.so` keeps its original
-  bytes; only the cache key is over the canonical form. This is
-  invasive — it requires a small ELF reader.
-- **Tag known-non-deterministic tools and downgrade verify
-  divergence to a notice for them.** Currently
-  `CABAL_LINK_CACHE_VERIFY_FAIL=1` escalates *any* divergence to a
-  hard error, which is too strict for `ghc-shared` in the wild. A
-  `ghc-shared` divergence is a known-acceptable canary noise; a
-  `ar-static` divergence is a real soundness bug. Different tools
-  should have different verify policies.
+That extra entry (118 bytes including the `:` separator) grows
+`.dynstr` by exactly the size delta we observed. Every subsequent
+section in the `.so` shifts by that amount; `.gnu.hash` re-hashes
+`.dynstr`'s new contents; the resulting `.so` differs from the
+cached blob in the offsets, the headers, the rela tables, and the
+hash. The 25 % byte delta is the propagation of one extra RUNPATH
+entry through the rest of the layout.
 
-**Upstream filing.** This is also worth raising with GHC: pin down
-which `ld`/`gold` flags or GHC linker shims are responsible, then
-either fix or document.
+In cold-populate the target `.so` doesn't exist yet — first build —
+so the linker doesn't add the dir. In verify-build the target
+exists from the prior sync rebuild, so it does.
+
+**Fix (implemented).** In `withSkippableLink`
+(`Cabal/src/Distribution/Simple/GHC/LinkManifest.hs`), wrap the
+inner link action so it `unlink`s the target before the linker
+runs. On a cache HIT the action isn't called, so the wrap has no
+effect on hot path. On a cache MISS, a skip-reason, or a
+`CABAL_LINK_CACHE_DISABLE=1` build the target is removed first and
+the linker treats the output as a fresh creation. No more dir-of-
+output autopath, no more RUNPATH divergence.
+
+Additionally, `depLibraryPaths` in
+`Cabal/src/Distribution/Simple/LocalBuildInfo.hs` had a related
+latent bug: when computing the rpath for a package that was already
+registered in the in-place package DB (e.g. on relink after a prior
+build), its self-entry slipped through the `is_external` filter and
+its own build dir would have been added to its own rpath via
+cabal's explicit `-optl-Wl,-rpath` flags. Patched to exclude
+`componentUnitId clbi` from `external_ipkgs`. This isn't what
+surfaced in the bench (cabal's explicit rpaths happened to come
+out clean for `demo-core` in our setup), but it would have shown up
+on a project where a package depended on a sibling that depended on
+itself, or in any future change that surfaces in-place internal
+entries through the same code path.
+
+**Measured effect.**
+
+| | before | after |
+|---|---|---|
+| `body-stable` verify | HIT-DIVERGED ×2 | **PASS** (verified=3 misses=5) |
+| `add-unexported` verify | HIT-DIVERGED ×2 | **PASS** (verified=3 misses=5) |
+| `refactor-internal` verify | HIT-DIVERGED ×2 | **PASS** (verified=3 misses=5) |
+| `whitespace-only` verify | HIT-DIVERGED ×2 | **PASS** (verified=3 misses=5) |
+| `comment-only` verify | HIT-DIVERGED ×2 | **PASS** (verified=3 misses=5) |
+| `reorder-exports` verify | HIT-DIVERGED ×2 | **PASS** (verified=3 misses=5) |
+| `edit-leaf-of-mid-lib` verify | HIT-DIVERGED ×1 | **PASS** (verified=1 misses=3) |
+| `add-exported`, `modify-type` verify | PASS (no HITs to verify) | PASS (unchanged) |
+
+Every previously-failing scenario now passes the `VERIFY_FAIL=1`
+sweep. The HIT counts are unchanged; the on-time is slightly worse
+(extra `unlink` syscall per non-cached link) but well within noise.
+
+**Upstream filing.** Worth raising the "linker auto-adds target's
+directory when target exists" behavior with GHC and binutils. The
+behavior is probably documented somewhere; a flag to suppress it
+would let cabal stop having to `unlink` manually.
 
 ## Finding 3: line-number shifts cost downstream HITs
 
@@ -293,74 +333,113 @@ A = inputs differ genuinely (cache cannot help under byte-exact model)
 B = ghc-recompile-conservative (downstream `.o` differs without semantic justification — upstream GHC fix)
 C = cabal-relink-eager / cache-key-incomplete (the cache could close this gap)
 D = key-relaxable (cache key contains something soundness doesn't require)
+F = fixed in this branch
 
 | scenario | target | outcome | class |
 |---|---|---|---|
-| body-stable, add-unexported | all 9 | HIT | – |
+| body-stable, add-unexported | all 8 cached + exe skipped | HIT (8) + SKIPPED (1) | – |
 | add-exported | core.{a,so}, graph.{a,so}, engine.{a,so} | MISS | A (`.o` of touched module + `.hi` of touched module both change; downstream forced recompile by GHC is correct) |
-| add-exported | demo-app | *spurious HIT* | **C** — exe key missing dep archives (Finding 1) |
+| add-exported | demo-app | SKIPPED | **F** (was: spurious HIT — Finding 1, now fixed) |
 | modify-type | core.{a,so}, graph.{a,so}, engine.{a,so} | MISS | A |
-| modify-type | demo-app | *spurious HIT* | **C** (Finding 1) |
-| refactor-internal | core.{a,so}, exe | MISS | A (`.o` of touched module differs; exe key correctly includes dep archive bytes — well, it doesn't, but if it did, this MISS would be correct) |
+| modify-type | demo-app | SKIPPED | **F** (Finding 1, fixed) |
+| refactor-internal | core.{a,so} | MISS | A (`.o` of touched module differs) |
 | refactor-internal | graph.{a,so}, engine.a | MISS | **B/D** — `.hi` of `Util` is stable but downstream `.o` differs because GHC re-emits source-position-dependent data |
+| refactor-internal | demo-app | SKIPPED | **F** (was: spurious HIT, now fixed) |
 | whitespace-only, comment-only, reorder-exports | graph.{a,so}, engine.a | MISS | **D** — line shift propagates into `.o` debug info (Finding 3) |
 | edit-leaf-of-mid-lib | core.{a,so}, codec.{a,so}, graph.{a,so}, engine.a | MISS | A for `codec.*` + `engine.a` (real cascade); B/incremental-rebuild artefact for the others (need more investigation) |
+| any `.so` previously flagged HIT-DIVERGED | — | (none after fixes) | **F** (Finding 2, fixed) |
 
 ## Prototype candidates, prioritised
 
 Ranked by expected impact in this demo. All cache-local unless noted.
 
 1. **Force-skip the exe cache when the link is in `--make` mode.**
-   ✅ **Prototyped, measured, and committed in this branch.** Patch
-   in `Cabal/src/Distribution/Simple/GHC/Build/Link.hs` (around
-   line 515): after computing `mDepArchives`, look at `linkSrcs`;
-   if any input ends in `.hs`/`.lhs` *and* `mDepArchives` came back
-   as `Just []`, treat the cache as untrustworthy for this exe link
+   ✅ **Prototyped, measured, and committed.** Patch in
+   `Cabal/src/Distribution/Simple/GHC/Build/Link.hs` (around line
+   515): after computing `mDepArchives`, look at `linkSrcs`; if any
+   input ends in `.hs`/`.lhs` *and* `mDepArchives` came back as
+   `Just []`, treat the cache as untrustworthy for this exe link
    and attach a `skipReason`. The exe outcome then surfaces as
-   `skipped` (which is correctly excluded from HIT counts) rather
-   than a spurious `hit`.
+   `skipped` rather than a spurious `hit`. Closes Finding 1.
 
-   **Measured effect** (full sweep, 3 runs):
+2. **Unlink the target before invoking the linker.**
+   ✅ **Prototyped, measured, and committed.** Patch in
+   `Cabal/src/Distribution/Simple/GHC/LinkManifest.hs`'s
+   `withSkippableLink`. When the linker is about to run (cache
+   disabled, skip-reason, or a cache MISS), `removeFile` the target
+   first if it exists. Stops `gcc -shared` / `ld` from
+   auto-injecting the target's directory into the produced RUNPATH.
+   Cache HIT path is untouched (it doesn't invoke `action`). Closes
+   Finding 2: every previously-`HIT-DIVERGED` scenario now passes
+   `CABAL_LINK_CACHE_VERIFY_FAIL=1`.
 
-   - Before the fix, every scenario showed `demo-app` HITting,
-     even `add-exported` and `modify-type` where the exe could
-     not possibly be the same binary.
-   - After the fix, `demo-app` shows `skipped` for every scenario
-     in `.per-target.tsv`.
-   - Verify-mode divergence counts dropped from 3→2 per scenario
-     in interface-stable cases (the exe is no longer in the
-     diverging set), and `add-exported`/`modify-type` now pass the
-     verify sweep cleanly (`PASS (verified=0 misses=8)`) instead of
-     diverging on the exe.
+3. **Exclude self from `depLibraryPaths`'s `external_ipkgs`.**
+   ✅ **Prototyped and committed.** Patch in
+   `Cabal/src/Distribution/Simple/LocalBuildInfo.hs`. A latent bug:
+   when a package is being re-linked after a prior build registered
+   it in the in-place package DB, the `is_external` filter accepted
+   its own entry (because the package's own UID is never in
+   `componentPackageDeps clbi`), and its build dir would be added
+   to its own rpath via cabal's explicit `-Wl,-rpath` flags. The
+   patch adds `installedUnitId ipkg /= componentUnitId clbi` to
+   the filter. Doesn't move the needle on this bench's verify
+   verdict (the actual auto-rpath was coming from #2 above), but
+   was independently broken and is now correct.
 
-   The headline HIT totals appear lower because what was a false
-   HIT is now an honest skip; the per-target table reads cleaner.
-2. **Per-tool verify policy.** Add a configuration knob (env or
-   `Verify` field) so that `ghc-shared` divergences log a warning
-   while `ar-static` divergences hard-fail. Closes the false-positive
-   noise from Finding 2.
-3. **Canonical `.o` hashing.** Add a `hashInputCanonical` variant
-   that strips `.debug_*` and `.note.gnu.*` sections before xxh64.
-   Closes Finding 3 and helps Finding 2's downstream pattern. Cost:
-   adding a small ELF reader (or shelling out to `objcopy
-   --strip-debug --strip-unneeded`).
-4. **Persistent stat-index across cabal-install invocations.** Save
-   the index to `$CABAL_LINK_CACHE_DIR/.stat-index` on exit, load on
-   start, invalidate stale entries. Doesn't change HIT rate; reduces
-   per-build hashing time when the cache is large. Useful in CI.
+The three patches together close every soundness finding the bench
+surfaced. The remaining work below is about getting *more HITs*,
+not *more correctness*.
+
+### Open: closing the `whitespace-only` / line-shift gap
+
+The `refactor-internal`/`whitespace-only`/`comment-only`/
+`reorder-exports` scenarios still only achieve 6/9 (now 5/8 with
+the exe forced to `skipped`) HITs out of the cone, because the
+touched module's `.o` differs from baseline even though its `.hi`
+doesn't — line numbers shifted in source, line-number tables
+shifted in `.o`. The cache faithfully sees those `.o`s as different
+inputs and MISSes the upstream archive links. Two ways forward:
+
+- **Canonical `.o` hashing.** Add a `hashInputCanonical` variant
+  that strips `.debug_*`, source-file fingerprints, and similar
+  position-dependent metadata before xxh64. The on-disk `.o` keeps
+  its bytes; only the cache-key digest is computed over the
+  canonical form. Requires a small ELF reader or shelling out to
+  `objcopy --strip-debug --strip-unneeded` (then hashing the
+  stripped stream). Closes Finding 3.
+- **Cheap alternative.** Include `.hi` ABI fingerprints alongside
+  `.o` digests in the cache key. This wouldn't flip the current
+  bench's MISSes (the `.o`s really differ), but it would let
+  downstream consumers decide to bypass the relink when interface
+  stability is provable.
+
+### Other open items
+
+- **Persistent stat-index across cabal-install invocations.** Save
+  the index to `$CABAL_LINK_CACHE_DIR/.stat-index` on exit, load on
+  start, invalidate stale entries. Doesn't change HIT rate; reduces
+  per-build hashing time when the cache is large. Useful in CI.
+- **`.dyn_o` vs `.o` codegen asymmetry.** Several scenarios show
+  `engine.a` MISS but `engine.so` HIT for line-shift edits. The
+  static archive uses `.o` files; the shared library uses `.dyn_o`
+  files. The asymmetry says `.dyn_o` is byte-stable across line
+  shifts but `.o` is not. Worth a GHC investigation.
 
 ## Out of scope but worth filing upstream
 
-- **GHC**: investigate whether `.dyn_o` and `.o` codegen embed source
-  position info differently (we observed `engine.so` HIT vs `engine.a`
-  MISS for line-shift edits — Finding 3).
-- **GHC + `gold`**: pin down which `.so` linker step is
-  non-reproducible (Finding 2). Candidate sources: section
-  ordering, `.dynsym` ordering, alignment padding.
-- **Cabal**: re-document `Note [Link manifest cache]` once the
-  `linkDepArchives` semantics in Finding 1 are nailed down — the
-  current note is correct in intent but the code doesn't realise
-  it.
+- **GHC**: investigate whether `.dyn_o` and `.o` codegen embed
+  source position info differently (we observed `engine.so` HIT vs
+  `engine.a` MISS for line-shift edits — Finding 3).
+- **GHC + binutils / `gold`**: the "linker adds output's directory
+  to RUNPATH when the output exists" behavior (Finding 2's root
+  cause) is presumably documented somewhere in `ld(1)` and is what
+  the cabal-side `unlink` patch above works around. A `-Wl,
+  --no-output-dir-rpath` (or equivalent) flag would let cabal stop
+  having to do the unlink dance.
+- **Cabal**: refresh `Note [Link manifest cache]` to describe the
+  three patches above and the invariants they preserve. The note
+  predates the bench and didn't anticipate the exe-`--make`-mode
+  case or the linker-output-exists case.
 
 ## How to reproduce these findings
 

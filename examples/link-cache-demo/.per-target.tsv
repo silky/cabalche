@@ -46,10 +46,10 @@ add-unexported	2	libHSdemo-engine-0.1.0.0-inplace.a	hit
 add-unexported	2	demo-app	skipped
 add-unexported	3	libHSdemo-core-0.1.0.0-inplace-ghc9.10.3.so	hit
 add-unexported	3	libHSdemo-core-0.1.0.0-inplace.a	hit
-add-unexported	3	libHSdemo-codec-0.1.0.0-inplace-ghc9.10.3.so	hit
-add-unexported	3	libHSdemo-codec-0.1.0.0-inplace.a	hit
 add-unexported	3	libHSdemo-graph-0.1.0.0-inplace-ghc9.10.3.so	hit
 add-unexported	3	libHSdemo-graph-0.1.0.0-inplace.a	hit
+add-unexported	3	libHSdemo-codec-0.1.0.0-inplace-ghc9.10.3.so	hit
+add-unexported	3	libHSdemo-codec-0.1.0.0-inplace.a	hit
 add-unexported	3	libHSdemo-engine-0.1.0.0-inplace-ghc9.10.3.so	hit
 add-unexported	3	libHSdemo-engine-0.1.0.0-inplace.a	hit
 add-unexported	3	demo-app	skipped
