@@ -26,7 +26,7 @@ the edit lands halfway up the cone instead.
 ## Reproduce
 
 ```sh
-scripts/link-cache-demo-bench.sh --cabal=/nix/store/8cha34fzr08jyxxycg8j9s60pza7ws4d-cabal-install-3.17.0.0/bin/cabal --runs=3 --verify
+scripts/link-cache-demo-bench.sh --cabal=/nix/store/vvlfv3m1bryfpsq1nn8lspnlyyy9csf0-cabal-install-3.17.0.0/bin/cabal --runs=3 --verify
 ```
 
 ## What this measures
@@ -58,21 +58,21 @@ do not poison iteration N+1.
 
 ## Results
 
-- `cabal`     : /nix/store/8cha34fzr08jyxxycg8j9s60pza7ws4d-cabal-install-3.17.0.0/bin/cabal
+- `cabal`     : /nix/store/vvlfv3m1bryfpsq1nn8lspnlyyy9csf0-cabal-install-3.17.0.0/bin/cabal
 - `runs`      : 3
 - `noop floor`: 0.065s (cabal plan + scan, no edit; inherited by every row below)
 
 | scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 2.438 | 0.764 | 1.674 | 68.7% | 27 | 0 | 9.0 / 9 |
-| add-unexported | 2.389 | 0.760 | 1.629 | 68.2% | 27 | 0 | 9.0 / 9 |
-| add-exported | 2.557 | 2.648 | -0.091 | -3.6% | 6 | 21 | 2.0 / 9 |
-| modify-type | 2.730 | 2.855 | -0.125 | -4.6% | 6 | 21 | 2.0 / 9 |
-| refactor-internal | 2.349 | 2.154 | 0.195 | 8.3% | 12 | 15 | 4.0 / 9 |
-| whitespace-only | 2.372 | 2.127 | 0.245 | 10.3% | 12 | 15 | 4.0 / 9 |
-| comment-only | 2.362 | 2.077 | 0.285 | 12.1% | 12 | 15 | 4.0 / 9 |
-| reorder-exports | 2.282 | 2.041 | 0.241 | 10.6% | 12 | 15 | 4.0 / 9 |
-| edit-leaf-of-mid-lib | 2.030 | 2.062 | -0.032 | -1.6% | 0 | 15 | 0.0 / 9 |
+| body-stable | 2.367 | 0.826 | 1.541 | 65.1% | 27 | 0 | 9.0 / 9 |
+| add-unexported | 2.398 | 0.731 | 1.667 | 69.5% | 27 | 0 | 9.0 / 9 |
+| add-exported | 2.556 | 2.770 | -0.214 | -8.4% | 6 | 21 | 2.0 / 9 |
+| modify-type | 2.718 | 2.769 | -0.051 | -1.9% | 6 | 21 | 2.0 / 9 |
+| refactor-internal | 2.315 | 2.038 | 0.277 | 12.0% | 12 | 15 | 4.0 / 9 |
+| whitespace-only | 2.350 | 2.110 | 0.240 | 10.2% | 12 | 15 | 4.0 / 9 |
+| comment-only | 2.417 | 2.013 | 0.404 | 16.7% | 12 | 15 | 4.0 / 9 |
+| reorder-exports | 2.398 | 2.098 | 0.300 | 12.5% | 12 | 15 | 4.0 / 9 |
+| edit-leaf-of-mid-lib | 2.083 | 2.066 | 0.017 | 0.8% | 0 | 15 | 0.0 / 9 |
 
 ## Per-target outcomes
 
