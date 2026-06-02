@@ -25,12 +25,18 @@ https://github.com/haskell/cabal.
 ## Fork: content-addressed link-output cache
 
 This fork adds a content-addressed cache for the linker steps cabal
-drives (`ar`, `ld -r`, `ghc -shared`, `ghc -staticlib`, `ghc -o`). On a
-relink with byte-equal `.o` inputs the cache byte-copies the prior
-output to the target and skips the linker call. See
+drives (`ar`, `ld -r`, `ghc -shared`, `ghc -staticlib`, `ghc -o`,
+and now also the exe link `ghc -o <bin>`). On a relink with
+byte-equal `.o` inputs the cache byte-copies the prior output to
+the target and skips the linker call. See
 [`changelog.d/link-output-cache.md`](changelog.d/link-output-cache.md)
 and [`examples/link-cache-demo/INVESTIGATION.md`](examples/link-cache-demo/INVESTIGATION.md)
-for the measured benefit on a five-package demo project.
+for the measured benefit on a five-package demo project, and
+[`examples/link-cache-demo/PLAN-exe-link-cache.md`](examples/link-cache-demo/PLAN-exe-link-cache.md)
+for the exe-link work and its real-world impact on hydra
+(`add-unexported/hydra-node`: **+22% edit, +46% revert** purely
+from caching the exe link, on top of what the lib cache already
+delivers).
 
 ### Quick usage (Nix flake)
 
