@@ -390,6 +390,29 @@ The three patches together close every soundness finding the bench
 surfaced. The remaining work below is about getting *more HITs*,
 not *more correctness*.
 
+### Open: cache the exe link properly (currently SKIPPED in `--make` mode)
+
+Finding 1's fix avoids the unsound HIT by SKIPPING the exe cache
+whenever cabal sees `--make` mode — which is every cabal v3 exe
+build. The cache key is well-formed for libraries but degenerate
+for exes (only `Main.hs` is on the input list at key-computation
+time), so SKIP is the only safe option today.
+
+A real-world A/B against the [hydra](https://github.com/cardano-scaling/hydra)
+repo (`scripts/link-cache-compare.sh` driving five edit shapes)
+shows the exe link is the single biggest unrealized win: 100+ HITs
+across the lib graph but the exe link contributes nothing to the
+speedup. The proper fix is to split the exe build into a compile
+pass (`ghc --make -fno-link …`) and a link pass (`ghc -o …
+<enumerated objects> -package-id …`), matching what library builds
+already do. With explicit object inputs and a `componentPackageDeps`-
+derived dep list, the cache key becomes structurally identical to a
+lib link's.
+
+Detailed implementation plan, motivating numbers, risks, and
+verification steps live in
+[`PLAN-exe-link-cache.md`](PLAN-exe-link-cache.md).
+
 ### Open: closing the `whitespace-only` / line-shift gap
 
 The `refactor-internal`/`whitespace-only`/`comment-only`/
