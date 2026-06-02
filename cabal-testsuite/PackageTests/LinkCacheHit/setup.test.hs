@@ -45,6 +45,16 @@ main = setupTest $ recordMode DoNotRecord $ do
     assertOutputContains "[link-cache] HIT" warmResult
     assertOutputDoesNotContain "[link-cache] MISS" warmResult
 
+    -- Pin the exe-link specifically. Without explicit-object exe
+    -- links (driven from componentIncludes clbi rather than --make
+    -- mode), the exe's cache key was under-keyed and forced to
+    -- 'SKIPPED (ghc-link-exe) … cache key not trusted'. Asserting
+    -- that the warm pass references the exe link (it has to: the
+    -- output exists) AND that no SKIPPED-with-the-exe-tool line is
+    -- present guards against regressing to that path.
+    assertOutputContains "ghc-link-exe" warmResult
+    assertOutputDoesNotContain "SKIPPED (ghc-link-exe)" warmResult
+
 -- | Walk @root@ and delete files that are exe binaries or library
 -- archives matching @libPrefix@ (e.g. @libHSlink-cache-hit@). Object
 -- files and other artefacts are left in place so the next build only

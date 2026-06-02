@@ -228,7 +228,7 @@ linkOrLoadComponent
               info verbosity "Linking..."
               let linkExeLike name = do
                     rpaths <- get_rpaths (Set.singleton wantedExeWay)
-                    linkExecutable verbosity (linkerOpts rpaths) (wantedExeWay, buildOpts) targetDir name runGhcProg lbi
+                    linkExecutable verbosity (linkerOpts rpaths) (wantedExeWay, buildOpts) targetDir name runGhcProg lbi clbi
               case component of
                 CLib lib -> do
                   let libWays = wantedLibWays isIndef
@@ -487,43 +487,61 @@ linkExecutable
   -> (GhcOptions -> IO ())
   -- ^ Run the configured GHC program
   -> LocalBuildInfo
+  -> ComponentLocalBuildInfo
+  -- ^ The component being linked, so the dep-archive walk can pull
+  -- the planner-authoritative dep list from 'componentIncludes'
+  -- rather than the post-'--make'-flattening view exposed via
+  -- 'ghcOptPackages'.
   -> IO ()
-linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhcProg lbi = do
+linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhcProg lbi clbi = do
   let baseOpts = buildOpts way
-      linkOpts =
-        baseOpts
-          `mappend` linkerOpts
-          `mappend` mempty
-            { -- If there are no input Haskell files we pass -no-hs-main, and
-              -- assume there is a main function in another non-haskell object
-              ghcOptLinkNoHsMain = toFlag (ghcOptInputFiles baseOpts == mempty && ghcOptInputScripts baseOpts == mempty)
-            }
       i = interpretSymbolicPathLBI lbi
+      -- Decide -no-hs-main from the *compile-pass* inputs, before we
+      -- replace ghcOptInputFiles with the explicit object list below.
+      noHsMainFlag = toFlag (ghcOptInputFiles baseOpts == mempty && ghcOptInputScripts baseOpts == mempty)
+      target = targetDir </> makeRelativePathEx (exeTargetName (hostPlatform lbi) targetName)
 
-  -- Work around old GHCs not relinking in this
-  -- situation, see #3294
-  let target =
-        targetDir </> makeRelativePathEx (exeTargetName (hostPlatform lbi) targetName)
-      linkSrcs = map i (fromNubListR (ghcOptInputFiles linkOpts))
+  -- The compile pass (buildHaskellModules) wrote the .o files into the
+  -- exe's per-component build dir, which is recorded in baseOpts as
+  -- ghcOptObjDir. Enumerate them here as a directory walk: that picks
+  -- up FFI stub objects (e.g. *_stub.o) without us having to mirror
+  -- GHC's path-resolution rules, and the cache key gains nothing from
+  -- distinguishing "objects we predicted" from "objects we found".
+  -- The sort is for cache-key determinism and to give the linker a
+  -- stable command line.
+  enumeratedObjs <- case ghcOptObjDir baseOpts of
+    Flag objDir -> do
+      let objExt = buildWayObjectExtension objExtension way
+      enumerateObjectFiles (i objDir) objExt
+    NoFlag -> return []
+
+  -- Build the link command: explicit objects only, no --make, full
+  -- ghcOptPackages already populated by componentGhcOptions (which
+  -- threads componentIncludes clbi through). The record update over
+  -- the mappended options is the simplest way to force ghcOptMode
+  -- and the module/file input lists to empty (the Flag/NubListR
+  -- Semigroup instances are biased towards keeping non-empty
+  -- earlier-arg values, so we can't just merge in an mempty).
+  let linkOpts =
+        ( baseOpts
+            `mappend` linkerOpts
+            `mappend` mempty{ghcOptLinkNoHsMain = noHsMainFlag}
+        )
+          { ghcOptMode = NoFlag
+          , ghcOptInputFiles = toNubListR (map makeSymbolicPath enumeratedObjs)
+          , ghcOptInputModules = mempty
+          , ghcOptInputScripts = mempty
+          }
+      linkSrcs = enumeratedObjs
+
   -- See Note [Link manifest cache] for why exe link needs the dep
-  -- archives included in the cache key alongside ghcOptInputFiles.
-  mDepArchives <- linkDepArchives lbi linkOpts
-  -- If the link inputs are still source files (`--make` mode), GHC
-  -- resolves the dependency package list by walking imports rather
-  -- than from the `-package-id` flags we observe via
-  -- 'ghcOptPackages'. 'linkDepArchives' may then return `Just []`
-  -- because there is nothing to look up, leaving the cache key keyed
-  -- on `Main.hs` alone -- and the exe would HIT against a stale
-  -- baseline blob across every downstream-lib change. Detect this
-  -- and force-skip the cache for those exe links.
-  let hasHsInputs =
-        any
-          ( \p ->
-              FP.takeExtension p == ".hs"
-                || FP.takeExtension p == ".lhs"
-          )
-          linkSrcs
-      baseCtx =
+  -- archives included in the cache key alongside the object inputs.
+  -- With explicit objects + componentIncludes-derived dep list, the
+  -- key is well-formed for every exe link; the only remaining SKIP
+  -- branch is the conservative "we expected to find an archive on
+  -- disk and couldn't" case in linkDepArchives.
+  mDepArchives <- linkDepArchives lbi clbi linkOpts
+  let baseCtx =
         LinkContext
           { lcTool = "ghc-link-exe"
           , lcToolchainId = mkLinkToolchainId lbi
@@ -534,16 +552,56 @@ linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhc
           ( []
           , skipReason "dep-archive walk incomplete; cache key not trusted" baseCtx
           )
-        Just paths
-          | null paths && hasHsInputs ->
-              ( []
-              , skipReason
-                  "exe link is in `--make` mode; dep packages aren't in ghcOptPackages, cache key would be incomplete"
-                  baseCtx
-              )
-          | otherwise -> (paths, baseCtx)
+        Just paths -> (paths, baseCtx)
   withSkippableLink verbosity ctx (i target) (linkSrcs ++ depArchives) $
     runGhcProg linkOpts{ghcOptOutputFile = toFlag target}
+
+-- | Recursively enumerate files with the given extension under a
+-- directory; returns the absolute paths sorted lexicographically. Used
+-- to discover the object files the compile pass produced for an exe
+-- so the link pass can pass them explicitly to GHC. Returns @[]@ if
+-- the directory doesn't exist (cold first build, or an exe with no
+-- Haskell modules at all).
+enumerateObjectFiles :: FilePath -> String -> IO [FilePath]
+enumerateObjectFiles root ext = do
+  exists <- doesDirectoryExist root
+  if not exists
+    then return []
+    else fmap sort (walk root)
+  where
+    dotExt = '.' : ext
+    walk dir = do
+      names <- listDirectory dir
+      fmap concat $ for names $ \n -> do
+        let p = dir FP.</> n
+        isDir <- doesDirectoryExist p
+        if isDir
+          then walk p
+          else
+            if dotExt `isSuffixOf` n
+              then return [p]
+              else return []
+
+-- | Walk up parent directories until we find one whose basename
+-- starts with @ghc-@ or @ghcjs-@; that's the per-toolchain root in
+-- a cabal-install @dist-newstyle@ layout. Falls back to the
+-- two-hops-up answer if we hit the filesystem root without
+-- matching — preserves prior behaviour for layouts that don't
+-- follow the convention (e.g. @Setup build@ in a flat
+-- @dist/build/@).
+findToolchainRoot :: FilePath -> FilePath
+findToolchainRoot start = go start
+  where
+    fallback = FP.takeDirectory (FP.takeDirectory start)
+    go p =
+      let parent = FP.takeDirectory p
+          name = FP.takeFileName parent
+       in if parent == p
+            then fallback
+            else
+              if "ghc-" `isPrefixOf` name || "ghcjs-" `isPrefixOf` name
+                then parent
+                else go parent
 
 -- | Link a foreign library component
 linkFLib
@@ -950,6 +1008,17 @@ mkLinkToolchainId lbi =
 --      won't appear in the installed-package index until after the
 --      exe is linked.
 --
+-- The starting set of unit IDs is the union of 'ghcOptPackages' (the
+-- post-@--make@-flattening view) and 'componentIncludes' of the
+-- caller's 'ComponentLocalBuildInfo' (the planner-authoritative view).
+-- The latter is essential for executable links: cabal's exe build
+-- path historically passed source files to GHC in @--make@ mode and
+-- relied on GHC to walk imports for the dep list, so only the
+-- immediate @build-depends:@ of the exe stanza appeared in
+-- 'ghcOptPackages'. With the link step now driven by an explicit
+-- object list (and no @--make@), the dep list must come from
+-- somewhere; 'componentIncludes' has it.
+--
 -- Returns @Nothing@ if any 'DefiniteUnitId' that we expect to have a
 -- library archive (non-empty 'hsLibraries' in the installed-package
 -- index, or unknown to the index) didn't match anything we found.
@@ -958,29 +1027,50 @@ mkLinkToolchainId lbi =
 -- driven by a quietly-incomplete input set.
 --
 -- See @Note [Link manifest cache]@.
-linkDepArchives :: LocalBuildInfo -> GhcOptions -> IO (Maybe [FilePath])
-linkDepArchives lbi linkOpts = do
+linkDepArchives :: LocalBuildInfo -> ComponentLocalBuildInfo -> GhcOptions -> IO (Maybe [FilePath])
+linkDepArchives lbi clbi linkOpts = do
   let i = interpretSymbolicPathLBI lbi
       pkgIdx = installedPkgs lbi
-      uids = [uid | (uid, _) <- fromNubListR (ghcOptPackages linkOpts)]
+      uids =
+        ordNub $
+          [uid | (uid, _) <- fromNubListR (ghcOptPackages linkOpts)]
+            ++ [uid | (uid, _) <- componentIncludes clbi]
       libSearchDirs = map i (fromNubListR (ghcOptLinkLibPath linkOpts))
       ghcVerSuffix = "-ghc" ++ prettyShow (compilerVersion (compiler lbi))
       libExts = [".a", ghcVerSuffix ++ ".so", ghcVerSuffix ++ ".dylib", ".so", ".dylib"]
       uidStrings = [prettyShow (unDefUnitId d) | DefiniteUnitId d <- uids]
+      -- GHC's @hs-libraries@ field already carries the @HS@ prefix
+      -- (e.g. @HSbase-4.19.2.0-dcbb@) — concatenate with @lib@ only,
+      -- not @libHS@. Search @libraryDirs@ + @libraryDirsStatic@ for
+      -- @.a@/profiling archives and @libraryDynDirs@ (typically the
+      -- per-toolchain lib root) for @.so@/@.dylib@; the same package
+      -- may have its static and dynamic libs in different directories
+      -- (this is the standard nixpkgs/distro GHC layout).
       ipiPaths =
-        [ d FP.</> ("libHS" ++ hsLib ++ ext)
+        [ d FP.</> ("lib" ++ hsLib ++ ext)
         | DefiniteUnitId duid <- uids
         , Just ipi <- [PackageIndex.lookupUnitId pkgIdx (unDefUnitId duid)]
-        , d <- IPI.libraryDirs ipi ++ IPI.libraryDirsStatic ipi
+        , d <-
+            ordNub
+              ( IPI.libraryDirs ipi
+                  ++ IPI.libraryDirsStatic ipi
+                  ++ IPI.libraryDynDirs ipi
+              )
         , hsLib <- IPI.hsLibraries ipi
         , ext <- libExts
         ]
-      -- Anchor the in-tree walk to the lbi's actual build dir rather
-      -- than a magic number of @takeDirectory@ climbs. @buildDir lbi@
-      -- is the per-package build directory; its grandparent is the
-      -- per-toolchain root that contains sibling packages' archives.
+      -- Anchor the in-tree walk to the per-toolchain root, which
+      -- contains every sibling package's archive directory. For a lib
+      -- component the per-toolchain root is two takeDirectory hops up
+      -- from @buildDir lbi@; for an exe / test / bench / flib it can
+      -- be three or more (those layers are inserted as @x/<name>@,
+      -- @t/<name>@, etc.). Walk up parents until we hit a directory
+      -- whose basename starts with @ghc-@/@ghcjs-@; bail at the
+      -- filesystem root with a conservative fallback to two hops so
+      -- the existing lib behaviour is preserved on layouts that
+      -- don't follow this convention.
       buildDirAbs = i (buildDir lbi)
-      searchRoot = FP.takeDirectory (FP.takeDirectory buildDirAbs)
+      searchRoot = findToolchainRoot buildDirAbs
       -- Definite units we expect to have a library archive on disk:
       -- either we have a matching IPI entry with non-empty hsLibraries,
       -- or the unit isn't in the IPI at all and we rely on the search
