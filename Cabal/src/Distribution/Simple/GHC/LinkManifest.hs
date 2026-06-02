@@ -240,17 +240,31 @@ withSkippableLink
   -> IO ()
 withSkippableLink verbosity ctx target inputs action = do
   disabled <- lookupEnv "CABAL_LINK_CACHE_DISABLE"
+  -- Wrap the inner link action so that any time we end up actually
+  -- invoking the linker (cache disabled, skip-reason, or a real cache
+  -- MISS), we remove the target file first. When the output already
+  -- exists, 'gcc -shared' / 'ld' auto-adds the target's containing
+  -- directory to the produced binary's RUNPATH; that auto-rpath makes
+  -- the linker output depend on whether this is a first build or a
+  -- relink, breaks bit-reproducibility, and surfaces in the link-cache
+  -- as 'HIT-DIVERGED' under 'CABAL_LINK_CACHE_VERIFY=1'. Removing the
+  -- target before the linker runs sidesteps the issue. The cache HIT
+  -- path doesn't call 'action' so it's unaffected.
+  let action' = do
+        exists <- doesFileExist target
+        when exists (removeFile target)
+        action
   case (disabled, lcSkipReason ctx) of
-    (Just s, _) | not (null s) -> action
+    (Just s, _) | not (null s) -> action'
     (_, Just r) -> do
       noticeNoWrap verbosity $
         "[link-cache] SKIPPED (" <> lcTool ctx <> ") " <> target
           <> ": " <> r <> "\n"
       t0 <- getCurrentTime
-      action
+      action'
       t1 <- getCurrentTime
       appendStatsSilently target (lcTool ctx) StatsSkipped inputs t0 t1
-    _ -> cachedLink verbosity ctx target inputs action
+    _ -> cachedLink verbosity ctx target inputs action'
 
 -- | Outcome of a single 'cachedLink' invocation, used for telemetry.
 data StatsOutcome
