@@ -44,6 +44,9 @@ env:
 
 jobs:
   validate:
+    # Disabled on this fork: see the README "CI note" section for
+    # the full rationale (same as Bootstrap).
+    if: github.repository == 'haskell/cabal'
     name: Validate ${{ matrix.sys.os }} ghc-${{ matrix.ghc }}
     runs-on: ${{ matrix.sys.os }}
     outputs:
@@ -263,6 +266,8 @@ jobs:
       # partway there, at least, but is still imperfect.
 
   validate-old-ghcs:
+    # Disabled on this fork: see the README "CI note" section.
+    if: github.repository == 'haskell/cabal'
     name: Validate old ghcs ${{ matrix.extra-ghc }}
     # latest/latest doesn't have the old packages the old ghcs depend on
     runs-on: ubuntu-22.04
@@ -331,6 +336,8 @@ jobs:
       # of them does; it also applies here.
 
   build-alpine:
+    # Disabled on this fork: see the README "CI note" section.
+    if: github.repository == 'haskell/cabal'
     name: Build statically linked using alpine
     runs-on: ubuntu-latest
     container: "alpine:3.20"
@@ -401,6 +408,8 @@ jobs:
   # This one uses the cabal HEAD generated executable in the previous step
   # to build itself again, as sanity check
   dogfooding:
+    # Disabled on this fork: see the README "CI note" section.
+    if: github.repository == 'haskell/cabal'
     name: Dogfooding ${{ matrix.sys.os }} ghc-${{ matrix.ghc }}
     runs-on: ${{ matrix.sys.os }}
     needs: validate
@@ -466,7 +475,8 @@ jobs:
   prerelease-head:
     name: Create a GitHub prerelease with the binary artifacts
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/master'
+    # Also gated on github.repository to disable on this fork.
+    if: github.ref == 'refs/heads/master' && github.repository == 'haskell/cabal'
     permissions:
       contents: write
 
@@ -494,7 +504,8 @@ jobs:
     name: Create a GitHub LTS prerelease with the binary artifacts
     runs-on: ubuntu-latest
     # The LTS branch is hardcoded for now, update it on a new LTS!
-    if: github.ref == 'refs/heads/3.12'
+    # Also gated on github.repository to disable on this fork.
+    if: github.ref == 'refs/heads/3.12' && github.repository == 'haskell/cabal'
     permissions:
       contents: write
 

@@ -137,14 +137,18 @@ contract is documented at the top of
 
 ### CI note
 
-The `Bootstrap` workflow (`.github/workflows/bootstrap.yml`) is
-disabled on this fork via `if: github.repository == 'haskell/cabal'`.
-The pinned `bootstrap/linux-*.json` plans don't list `xxhash-ffi` or
-`hashable` (both added to `lib:Cabal` by the link-cache work) and
-regenerating six per-GHC plans per hackage revision isn't justified
-when the fork's distribution channel is the Nix flake above. All
-other CI workflows (`Validate`, `Build-alpine`, `fourmolu`, `hlint`,
-`typos`, etc.) run unchanged.
+The `Bootstrap` and `Validate` workflows
+(`.github/workflows/bootstrap.yml`, `.github/workflows/validate.yml`)
+are disabled on this fork via `if: github.repository == 'haskell/cabal'`
+on each top-level job. The fork's distribution channel is the Nix
+flake above, so the full upstream matrix (Bootstrap pinned-plan
+JSONs, the 33-job Validate matrix, Build-alpine, dogfooding) isn't
+load-bearing here — the link-cache work is exercised by the in-tree
+`cabal-testsuite/PackageTests/LinkCache*` integration tests and the
+`examples/link-cache-demo/` bench, run locally against the
+flake-built `cabal`. The remaining CI workflows
+(`fourmolu`, `hlint`, `typos`, `whitespace`, `changelogs`, etc.)
+run unchanged.
 
 ---
 
