@@ -18,6 +18,14 @@
 #   --iters=N         apply/revert pairs per cabal (default: 3)
 #   --report=PATH     markdown report path
 #                     (default: ./link-cache-compare-report.md)
+#   --cabal-args=STR  extra flags spliced into each `cabal build`
+#                     invocation (e.g. `--project-file=/tmp/bench.project`
+#                     to bypass a broken cabal.project glob). The string
+#                     is word-split on spaces.
+#   --a-cache         leave cabal-a's link-cache enabled (default:
+#                     `CABAL_LINK_CACHE_DISABLE=1`). Useful for isolating
+#                     a *delta between two cache implementations* rather
+#                     than the cache's full effect.
 #
 # Methodology, per cabal:
 #   1. `git checkout -- .` (refuses to start if the working tree is
@@ -57,18 +65,22 @@ NAME_A="cabal-A"
 NAME_B="cabal-B"
 ITERS=3
 REPORT=""
+CABAL_ARGS=""
+A_CACHE=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo=*)     REPO="${1#*=}"; shift ;;
-    --package=*)  PACKAGE="${1#*=}"; shift ;;
-    --patch=*)    PATCH="${1#*=}"; shift ;;
-    --cabal-a=*)  CABAL_A="${1#*=}"; shift ;;
-    --cabal-b=*)  CABAL_B="${1#*=}"; shift ;;
-    --name-a=*)   NAME_A="${1#*=}"; shift ;;
-    --name-b=*)   NAME_B="${1#*=}"; shift ;;
-    --iters=*)    ITERS="${1#*=}"; shift ;;
-    --report=*)   REPORT="${1#*=}"; shift ;;
+    --repo=*)        REPO="${1#*=}"; shift ;;
+    --package=*)     PACKAGE="${1#*=}"; shift ;;
+    --patch=*)       PATCH="${1#*=}"; shift ;;
+    --cabal-a=*)     CABAL_A="${1#*=}"; shift ;;
+    --cabal-b=*)     CABAL_B="${1#*=}"; shift ;;
+    --name-a=*)      NAME_A="${1#*=}"; shift ;;
+    --name-b=*)      NAME_B="${1#*=}"; shift ;;
+    --iters=*)       ITERS="${1#*=}"; shift ;;
+    --report=*)      REPORT="${1#*=}"; shift ;;
+    --cabal-args=*)  CABAL_ARGS="${1#*=}"; shift ;;
+    --a-cache)       A_CACHE=1; shift ;;
     -h|--help)
       sed -n '2,/^$/p' "$0"
       exit 0
@@ -118,9 +130,11 @@ esac
 WORK=$(mktemp -d -t link-cache-compare.XXXXXX)
 DIST_A="$WORK/dist-a"
 DIST_B="$WORK/dist-b"
+CACHE_A="$WORK/cache-a"
 CACHE_B="$WORK/cache-b"
 TSV="$WORK/results.tsv"
 mkdir -p "$DIST_A" "$DIST_B" "$CACHE_B"
+if (( A_CACHE )); then mkdir -p "$CACHE_A"; fi
 
 cleanup() {
   local rc=$?
@@ -204,7 +218,7 @@ run_pass() {
 
   echo "--- cold build (empty dist-newstyle$( [[ -n $cache ]] && echo " + empty cache" ))"
   local cold
-  cold=$(time_run "${label}-cold" "${env_pre[@]}" "$cabal" build --builddir="$dist" "$BUILD_TARGET")
+  cold=$(time_run "${label}-cold" "${env_pre[@]}" "$cabal" build --builddir="$dist" $CABAL_ARGS "$BUILD_TARGET")
   echo "    cold: ${cold}s"
 
   local edits=() reverts=() hits_per=() miss_per=()
@@ -214,7 +228,7 @@ run_pass() {
     local h0 m0 te
     h0=$(stats_count "$cache/.stats.jsonl" hit)
     m0=$(stats_count "$cache/.stats.jsonl" miss)
-    te=$(time_run "${label}-edit-$i" "${env_pre[@]}" "$cabal" build --builddir="$dist" "$BUILD_TARGET")
+    te=$(time_run "${label}-edit-$i" "${env_pre[@]}" "$cabal" build --builddir="$dist" $CABAL_ARGS "$BUILD_TARGET")
     local h1 m1
     h1=$(stats_count "$cache/.stats.jsonl" hit)
     m1=$(stats_count "$cache/.stats.jsonl" miss)
@@ -226,7 +240,7 @@ run_pass() {
     ( cd "$REPO" && git apply -R "$PATCH" )
     h0=$h1; m0=$m1
     local tr
-    tr=$(time_run "${label}-revert-$i" "${env_pre[@]}" "$cabal" build --builddir="$dist" "$BUILD_TARGET")
+    tr=$(time_run "${label}-revert-$i" "${env_pre[@]}" "$cabal" build --builddir="$dist" $CABAL_ARGS "$BUILD_TARGET")
     h1=$(stats_count "$cache/.stats.jsonl" hit)
     m1=$(stats_count "$cache/.stats.jsonl" miss)
     dh=$((h1-h0)); dm=$((m1-m0))
@@ -251,7 +265,11 @@ run_pass() {
 
 printf 'label\tcold_s\tedit_median_s\trevert_median_s\n' > "$TSV"
 
-run_pass "$NAME_A" "$CABAL_A" "$DIST_A" ""
+if (( A_CACHE )); then
+  run_pass "$NAME_A" "$CABAL_A" "$DIST_A" "$CACHE_A"
+else
+  run_pass "$NAME_A" "$CABAL_A" "$DIST_A" ""
+fi
 run_pass "$NAME_B" "$CABAL_B" "$DIST_B" "$CACHE_B"
 
 # Extract per-label medians.
@@ -284,7 +302,11 @@ MISS_B=$(stats_count "$CACHE_B/.stats.jsonl" miss)
   echo "- Target: \`$BUILD_TARGET\`"
   echo "- Patch: \`$PATCH\`"
   echo "- Iterations: $ITERS apply/revert pairs"
-  echo "- $NAME_A: \`$CABAL_A\` (env: \`CABAL_LINK_CACHE_DISABLE=1\`)"
+  if (( A_CACHE )); then
+    echo "- $NAME_A: \`$CABAL_A\` (env: \`CABAL_LINK_CACHE_DIR=$CACHE_A\`)"
+  else
+    echo "- $NAME_A: \`$CABAL_A\` (env: \`CABAL_LINK_CACHE_DISABLE=1\`)"
+  fi
   echo "- $NAME_B: \`$CABAL_B\` (env: \`CABAL_LINK_CACHE_DIR=$CACHE_B\`)"
   echo
   echo "Each pass: cold build, then $ITERS rounds of"
