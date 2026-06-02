@@ -515,6 +515,13 @@ linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhc
       enumerateObjectFiles (i objDir) objExt
     NoFlag -> return []
 
+  -- Include any c/c++/asm-source objects coming in via 'linkerOpts'
+  -- (from 'extraSourcesObjs' in 'linkOrLoadComponent'). These are
+  -- already-built artefacts that an exe with @c-sources@ /
+  -- @cxx-sources@ / @asm-sources@ needs linked in alongside its
+  -- Haskell objects.
+  let extraInputs = map i (fromNubListR (ghcOptInputFiles linkerOpts))
+
   -- Build the link command: explicit objects only, no --make, full
   -- ghcOptPackages already populated by componentGhcOptions (which
   -- threads componentIncludes clbi through). The record update over
@@ -522,17 +529,18 @@ linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhc
   -- and the module/file input lists to empty (the Flag/NubListR
   -- Semigroup instances are biased towards keeping non-empty
   -- earlier-arg values, so we can't just merge in an mempty).
-  let linkOpts =
+  let allInputs = enumeratedObjs ++ extraInputs
+      linkOpts =
         ( baseOpts
             `mappend` linkerOpts
             `mappend` mempty{ghcOptLinkNoHsMain = noHsMainFlag}
         )
           { ghcOptMode = NoFlag
-          , ghcOptInputFiles = toNubListR (map makeSymbolicPath enumeratedObjs)
+          , ghcOptInputFiles = toNubListR (map makeSymbolicPath allInputs)
           , ghcOptInputModules = mempty
           , ghcOptInputScripts = mempty
           }
-      linkSrcs = enumeratedObjs
+      linkSrcs = allInputs
 
   -- See Note [Link manifest cache] for why exe link needs the dep
   -- archives included in the cache key alongside the object inputs.

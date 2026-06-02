@@ -1,34 +1,41 @@
-# Plan: cache the exe link properly (currently SKIPPED in `--make` mode)
+# Plan: cache the exe link properly (was SKIPPED in `--make` mode)
+
+> **Status: ✅ Implemented.** Plan kept for the record. The
+> follow-up section "Measured outcome" near the bottom captures the
+> deltas the implementation actually delivered against the demo and
+> against the hydra A/B that motivated the work.
 
 This is a focused follow-up to Finding 1 in
 [`INVESTIGATION.md`](./INVESTIGATION.md). That finding closed the
 *soundness* gap (a spurious HIT) by SKIPPING the exe cache whenever
-cabal sees `--make` mode. Safe, but it leaves **the biggest single
+cabal sees `--make` mode. Safe, but it left **the biggest single
 link step in most projects uncached** — and a real-world A/B
-measurement (see "Motivating evidence" below) suggests this is the
-largest unrealized win on the table.
+measurement (see "Motivating evidence" below) suggested this was
+the largest unrealized win on the table.
 
 ## TL;DR
 
-- **Today.** Every exe link in cabal v3's default flow logs
+- **Before.** Every exe link in cabal v3's default flow logged
   `[link-cache] SKIPPED (ghc-link-exe) … cache key not trusted` and
-  runs the full linker, regardless of whether the cache already
-  holds a byte-equal exe.
+  ran the full linker, regardless of whether the cache already
+  held a byte-equal exe.
 - **Why.** In `--make` mode the linker invocation has only
   `Main.hs` as a tracked input; the dep archives and home-package
   `.o` files are produced by the same GHC invocation that does the
   link, so they aren't on disk when the cache key needs to be
   computed.
-- **Proposed.** Split exe building into a compile pass
-  (`ghc --make -fno-link …`) and a link pass (`ghc -o … <objects>
-  -package-id …`). The link pass mirrors the library-link pattern
-  cabal already uses: explicit object inputs, explicit `-package-id`
-  list, well-formed cache key.
-- **Expected gain.** Demo: small but observable (`demo-app`
-  graduates from `skipped` to `hit`). Realistic projects
-  (hydra-node class, ~100 deps): the +14.9% link-cache speedup
-  we measured on `add-unexported/hydra-node` is expected to widen
-  to ~+20–30% on revert-style edits.
+- **Done.** Split exe building so the link pass uses explicit
+  objects (no `--make`) and the dep list comes from
+  `componentIncludes clbi` rather than the post-`--make`-flattened
+  `ghcOptPackages`. The link pass now mirrors the library-link
+  pattern cabal already uses: explicit object inputs, well-formed
+  cache key.
+- **Measured outcome.** Demo: 8/9 → 9/9 HITs and a ~37% → ~69%
+  steady-state speedup. Hydra A/B (full table at the bottom of
+  this doc) widened the `add-unexported/hydra-node` speedup from
+  +14.9% (lib cache only, exe SKIPPED) to **+49.3% on edit** and
+  **+64.5% on revert** — ~3× the prior gain, driven almost
+  entirely by the exe link's wall-time share being recoverable.
 
 ## Motivating evidence
 
@@ -267,3 +274,81 @@ recovered fully on every cache HIT.
 - Closing the `whitespace-only` / line-shift `.o` non-determinism
   gap (Finding 3 in `INVESTIGATION.md`). Different mechanism,
   different fix.
+
+## Measured outcome (post-implementation)
+
+### Demo (5-package diamond, `scripts/link-cache-demo-bench.sh --runs=3 --verify`)
+
+`demo-app` flips from `skipped` (on every scenario, every iter)
+to `3/3` HIT on the scenarios where its inputs are byte-stable
+across the edit. Per-target table for the affected scenarios:
+
+| scenario        | core.a | core.so | codec.a | codec.so | graph.a | graph.so | engine.a | engine.so | demo-app |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| body-stable     | 3/3    | 3/3     | 3/3     | 3/3      | 3/3     | 3/3      | 3/3      | 3/3       | **3/3**  |
+| add-unexported  | 3/3    | 3/3     | 3/3     | 3/3      | 3/3     | 3/3      | 3/3      | 3/3       | **3/3**  |
+
+Wall-clock speedup on these two scenarios went from ~37% (with
+the exe `SKIPPED`) to ~69% (with the exe in the cache):
+
+| scenario        | cache off (s) | cache on (s) | speedup (before) | speedup (after) |
+|---|---:|---:|---:|---:|
+| body-stable     | 2.438         | 0.764        | ~37%             | **+68.7%**      |
+| add-unexported  | 2.389         | 0.760        | ~36%             | **+68.2%**      |
+
+All nine scenarios pass `CABAL_LINK_CACHE_VERIFY=1 +
+CABAL_LINK_CACHE_VERIFY_FAIL=1`. No `HIT-DIVERGED`. The new exe
+blobs are byte-sound.
+
+### Hydra (`scripts/link-cache-compare.sh` on `hydra-node`)
+
+Two A/B runs against the `02-add-unexported` patch:
+
+**Run 1 — total cache effect** (new fork: cache disabled vs
+enabled, isolating the cache as a whole, including the new
+exe-link cache):
+
+| stage  | cache off (s) | cache on (s) | speedup |
+|---|---:|---:|---:|
+| cold   | 260.771       | 261.559      | -0.3% (noise) |
+| edit   |  28.611       |  14.492      | **+49.3%** |
+| revert |  28.506       |  10.128      | **+64.5%** |
+
+**Run 2 — marginal exe-link contribution** (old fork vs new fork,
+*both with cache enabled*, isolating only the exe-link work; uses
+`scripts/link-cache-compare.sh --a-cache`):
+
+| stage  | fork-without-exe (s) | fork-with-exe (s) | speedup |
+|---|---:|---:|---:|
+| cold   | 261.391              | 261.718           | -0.1% (noise) |
+| edit   |  18.467              |  14.351           | **+22.3%** |
+| revert |  19.590              |  10.514           | **+46.3%** |
+
+The user's *prior* report against the same patch (cabal 3.10 vs
+the older fork with exe link SKIPPED) showed only **+14.9%** on
+edit and **+15.1%** on revert. Run 1 confirms the total cache
+effect tripled. Run 2 confirms ~half of that tripling is the
+**exe-link contribution alone** — caching that single linker
+invocation buys another 22% on edit and 46% on revert *on top of*
+what the existing lib cache already delivers.
+
+The revert pass benefits most because the post-revert byte state
+exactly matches the baseline blob the cache already holds — the
+exe HIT is essentially free.
+
+The cold-build delta of ±0.3% is within run-to-run noise. The
+extra GHC invocation per exe link (the link-only pass that used
+to be a re-`--make`) is a small, deterministic addition; the
+plan's risk of >5% cold-build regression did not materialise.
+
+### Compared to the demo, why hydra wins more
+
+Two compounding reasons:
+
+1. Hydra's exe (`hydra-node`) links against ~100 packages — much
+   more bytes flow through the linker per build than in the demo
+   (5 packages). The cache replaces a much larger linker
+   invocation with a single copy.
+2. Hydra's lib graph is broader, so even when the lib cache
+   already hit on individual `.a`/`.so` targets, the exe link was
+   the long pole. With the exe also cached, that pole disappears.

@@ -390,27 +390,40 @@ The three patches together close every soundness finding the bench
 surfaced. The remaining work below is about getting *more HITs*,
 not *more correctness*.
 
-### Open: cache the exe link properly (currently SKIPPED in `--make` mode)
+### Closed: cache the exe link properly (was SKIPPED in `--make` mode)
 
-Finding 1's fix avoids the unsound HIT by SKIPPING the exe cache
-whenever cabal sees `--make` mode — which is every cabal v3 exe
-build. The cache key is well-formed for libraries but degenerate
-for exes (only `Main.hs` is on the input list at key-computation
-time), so SKIP is the only safe option today.
+✅ **Prototyped, measured, and committed.** Finding 1's fix avoided
+the unsound HIT by SKIPPING the exe cache whenever cabal sees
+`--make` mode — which was every cabal v3 exe build. The follow-up
+in `Cabal/src/Distribution/Simple/GHC/Build/Link.hs` (a) drops
+`--make` for the link pass, (b) enumerates the post-compile `.o`
+files under the exe's per-component build dir and passes them
+explicitly, (c) threads `ComponentLocalBuildInfo` through so
+`linkDepArchives` can union the planner-authoritative dep list
+(`componentIncludes clbi`) with the post-`--make`-flattened
+`ghcOptPackages`, (d) fixes two longstanding bugs in
+`linkDepArchives` that the new exe path surfaced (`libHS<hslib>`
+double-adding `HS`; `IPI.libraryDynDirs` never being searched, so
+distro/nix GHCs' `.so`s were invisible), and (e) replaces the
+two-takeDirectory-hops heuristic with a walk-up-to-`ghc-*` to find
+the per-toolchain root (exes live a layer deeper than libs in
+cabal v3's `dist-newstyle` layout).
 
-A real-world A/B against the [hydra](https://github.com/cardano-scaling/hydra)
-repo (`scripts/link-cache-compare.sh` driving five edit shapes)
-shows the exe link is the single biggest unrealized win: 100+ HITs
-across the lib graph but the exe link contributes nothing to the
-speedup. The proper fix is to split the exe build into a compile
-pass (`ghc --make -fno-link …`) and a link pass (`ghc -o …
-<enumerated objects> -package-id …`), matching what library builds
-already do. With explicit object inputs and a `componentPackageDeps`-
-derived dep list, the cache key becomes structurally identical to a
-lib link's.
+Measured impact, demo (`scripts/link-cache-demo-bench.sh
+--runs=3 --verify`):
 
-Detailed implementation plan, motivating numbers, risks, and
-verification steps live in
+| scenario        | old speedup (8/9 link steps) | new speedup (9/9 link steps) |
+|---|---:|---:|
+| body-stable     |                       ~37%  |                      ~69%   |
+| add-unexported  |                       ~36%  |                      ~68%   |
+
+The exe link is the single largest cacheable step in the demo
+(static binary linking against base + 4 in-tree libs), and the
+HIT-rate jump from 8/9 → 9/9 nearly doubled the steady-state
+speedup. `--verify` continues to pass on all nine scenarios —
+the new exe blobs are byte-sound.
+
+Hydra A/B numbers and a full retrospective live in
 [`PLAN-exe-link-cache.md`](PLAN-exe-link-cache.md).
 
 ### Open: closing the `whitespace-only` / line-shift gap

@@ -26,7 +26,7 @@ the edit lands halfway up the cone instead.
 ## Reproduce
 
 ```sh
-scripts/link-cache-demo-bench.sh --cabal=/nix/store/vhr6yp4cahlrffcm8nrb7yg9bw0mpml6-cabal-install-3.17.0.0/bin/cabal --runs=3 --verify
+scripts/link-cache-demo-bench.sh --cabal=/nix/store/8cha34fzr08jyxxycg8j9s60pza7ws4d-cabal-install-3.17.0.0/bin/cabal --runs=3 --verify
 ```
 
 ## What this measures
@@ -58,21 +58,21 @@ do not poison iteration N+1.
 
 ## Results
 
-- `cabal`     : /nix/store/vhr6yp4cahlrffcm8nrb7yg9bw0mpml6-cabal-install-3.17.0.0/bin/cabal
+- `cabal`     : /nix/store/8cha34fzr08jyxxycg8j9s60pza7ws4d-cabal-install-3.17.0.0/bin/cabal
 - `runs`      : 3
-- `noop floor`: 0.047s (cabal plan + scan, no edit; inherited by every row below)
+- `noop floor`: 0.065s (cabal plan + scan, no edit; inherited by every row below)
 
 | scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 1.949 | 1.353 | 0.596 | 30.6% | 24 | 0 | 8.0 / 9 |
-| add-unexported | 2.048 | 1.379 | 0.669 | 32.7% | 24 | 0 | 8.0 / 9 |
-| add-exported | 2.376 | 2.365 | 0.011 | 0.5% | 6 | 18 | 2.0 / 9 |
-| modify-type | 2.446 | 2.525 | -0.079 | -3.2% | 6 | 18 | 2.0 / 9 |
-| refactor-internal | 2.266 | 1.595 | 0.671 | 29.6% | 15 | 9 | 5.0 / 9 |
-| whitespace-only | 2.191 | 1.673 | 0.518 | 23.6% | 15 | 9 | 5.0 / 9 |
-| comment-only | 2.254 | 1.683 | 0.571 | 25.3% | 15 | 9 | 5.0 / 9 |
-| reorder-exports | 2.279 | 1.687 | 0.592 | 26.0% | 15 | 9 | 5.0 / 9 |
-| edit-leaf-of-mid-lib | 2.074 | 1.664 | 0.410 | 19.8% | 3 | 9 | 1.0 / 9 |
+| body-stable | 2.438 | 0.764 | 1.674 | 68.7% | 27 | 0 | 9.0 / 9 |
+| add-unexported | 2.389 | 0.760 | 1.629 | 68.2% | 27 | 0 | 9.0 / 9 |
+| add-exported | 2.557 | 2.648 | -0.091 | -3.6% | 6 | 21 | 2.0 / 9 |
+| modify-type | 2.730 | 2.855 | -0.125 | -4.6% | 6 | 21 | 2.0 / 9 |
+| refactor-internal | 2.349 | 2.154 | 0.195 | 8.3% | 12 | 15 | 4.0 / 9 |
+| whitespace-only | 2.372 | 2.127 | 0.245 | 10.3% | 12 | 15 | 4.0 / 9 |
+| comment-only | 2.362 | 2.077 | 0.285 | 12.1% | 12 | 15 | 4.0 / 9 |
+| reorder-exports | 2.282 | 2.041 | 0.241 | 10.6% | 12 | 15 | 4.0 / 9 |
+| edit-leaf-of-mid-lib | 2.030 | 2.062 | -0.032 | -1.6% | 0 | 15 | 0.0 / 9 |
 
 ## Per-target outcomes
 
@@ -87,15 +87,15 @@ Target abbreviations: `core.a` = `libHSdemo-core-*.a`, etc.
 
 | scenario | core.a | core.so | codec.a | codec.so | graph.a | graph.so | engine.a | engine.so | demo-app |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 |
-| add-unexported | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 |
+| body-stable | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| add-unexported | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 | add-exported | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
 | modify-type | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
-| refactor-internal | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 |
-| whitespace-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 |
-| comment-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 |
-| reorder-exports | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 |
-| edit-leaf-of-mid-lib | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 0/3 |
+| refactor-internal | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| whitespace-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| comment-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| reorder-exports | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| edit-leaf-of-mid-lib | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
 
 ## Soundness
 
@@ -107,15 +107,15 @@ divergence is escalated to a hard build error.
 
 | scenario | verdict | detail |
 |---|---|---|
-| body-stable | pass | verified=3 misses=5 |
-| add-unexported | pass | verified=3 misses=5 |
-| add-exported | pass | verified=0 misses=8 |
-| modify-type | pass | verified=0 misses=8 |
-| refactor-internal | pass | verified=3 misses=5 |
-| whitespace-only | pass | verified=3 misses=5 |
-| comment-only | pass | verified=3 misses=5 |
-| reorder-exports | pass | verified=3 misses=5 |
-| edit-leaf-of-mid-lib | pass | verified=1 misses=3 |
+| body-stable | pass | verified=2 misses=7 |
+| add-unexported | pass | verified=2 misses=7 |
+| add-exported | pass | verified=0 misses=9 |
+| modify-type | pass | verified=0 misses=9 |
+| refactor-internal | pass | verified=2 misses=7 |
+| whitespace-only | pass | verified=2 misses=7 |
+| comment-only | pass | verified=2 misses=7 |
+| reorder-exports | pass | verified=2 misses=7 |
+| edit-leaf-of-mid-lib | pass | verified=0 misses=5 |
 
 All scenarios passed: every HIT reported by the cache produced
 byte-identical linker output. The HIT counts in the tables
