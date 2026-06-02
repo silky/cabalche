@@ -459,7 +459,21 @@ inputs and misses the upstream archive links. Two ways forward:
   `engine.a` MISS but `engine.so` HIT for line-shift edits. The
   static archive uses `.o` files; the shared library uses `.dyn_o`
   files. The asymmetry says `.dyn_o` is byte-stable across line
-  shifts but `.o` is not. Worth a GHC investigation.
+  shifts but `.o` is not. Worth a GHC investigation. Confirmed
+  on hydra against `02-add-unexported.patch`:
+  `Hydra/Prelude.dyn_o` is byte-identical before and after the
+  edit, but `Hydra/Prelude.o` differs. The `.so` HITs the cache
+  while the `.a` MISSes — and that single `.a` MISS cascades to
+  every exe link that includes `libHShydra-prelude.a` in its
+  inputs. Closing this would convert the remaining 5–6 hydra
+  exe MISSes per scenario to HITs for unexported-binding edits.
+  Probable culprit: `-fPIC` (set for dynamic codegen) takes a
+  different optimization path that drops unused `_`-prefixed
+  bindings; non-PIC keeps them. A cache-side workaround would
+  be "hash the .a's member-by-member content rather than the
+  archive bytes", but it costs an `ar`-format parser; a
+  GHC-side fix (make non-PIC codegen match) is cheaper if the
+  GHC team agrees the asymmetry isn't load-bearing.
 
 ## Out of scope but worth filing upstream
 
