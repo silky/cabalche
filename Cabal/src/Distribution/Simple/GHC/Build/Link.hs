@@ -504,18 +504,35 @@ linkExecutable verbosity linkerOpts (way, buildOpts) targetDir targetName runGhc
   -- See Note [Link manifest cache] for why exe link needs the dep
   -- archives included in the cache key alongside ghcOptInputFiles.
   mDepArchives <- linkDepArchives lbi linkOpts
-  let baseCtx =
+  -- If the link inputs are still source files (`--make` mode), GHC
+  -- resolves the dependency package list by walking imports rather
+  -- than from the `-package-id` flags we observe via
+  -- 'ghcOptPackages'. 'linkDepArchives' may then return `Just []`
+  -- because there is nothing to look up, leaving the cache key keyed
+  -- on `Main.hs` alone -- and the exe would HIT against a stale
+  -- baseline blob across every downstream-lib change. Detect this
+  -- and force-skip the cache for those exe links.
+  let hasHsInputs = any (\p -> FP.takeExtension p == ".hs"
+                            || FP.takeExtension p == ".lhs") linkSrcs
+      baseCtx =
         LinkContext
           { lcTool = "ghc-link-exe"
           , lcToolchainId = mkLinkToolchainId lbi
           , lcSkipReason = Nothing
           }
       (depArchives, ctx) = case mDepArchives of
-        Just paths -> (paths, baseCtx)
         Nothing ->
           ( []
           , skipReason "dep-archive walk incomplete; cache key not trusted" baseCtx
           )
+        Just paths
+          | null paths && hasHsInputs ->
+              ( []
+              , skipReason
+                  "exe link is in `--make` mode; dep packages aren't in ghcOptPackages, cache key would be incomplete"
+                  baseCtx
+              )
+          | otherwise -> (paths, baseCtx)
   withSkippableLink verbosity ctx (i target) (linkSrcs ++ depArchives) $
     runGhcProg linkOpts{ghcOptOutputFile = toFlag target}
 
