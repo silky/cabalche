@@ -56,7 +56,7 @@ import Numeric (showHex)
 import qualified System.Posix.Files as Posix
 #endif
 
--- | Default cap when @CABAL_LINK_CACHE_MAX_BYTES@ is unset or unparseable.
+-- | Default cap when @CABAL_LINK_CACHE_MAX_BYTES@ is unset or unparsable.
 defaultMaxBytes :: Integer
 defaultMaxBytes = 5 * 1024 * 1024 * 1024
 

@@ -267,7 +267,7 @@ data Symlink = Symlink
   -- ^ The name of the executable to in the private bin dir, eg @foo-1.0@.
   }
 
--- | After checking if a target is writeable given the overwrite policy,
+-- | After checking if a target is writable given the overwrite policy,
 -- dispatch to an appropriate action;
 --  * @onMissing@ if the target doesn't exist
 --  * @onOverwrite@ if the target exists and we are allowed to overwrite it
