@@ -402,11 +402,11 @@ inputs and misses the upstream archive links. Two ways forward:
 
 - **Canonical `.o` hashing.** Add a `hashInputCanonical` variant
   that strips `.debug_*`, source-file fingerprints, and similar
-  position-dependent metadata before xxh64. The on-disk `.o` keeps
-  its bytes; only the cache-key digest is computed over the
-  canonical form. Requires a small ELF reader or shelling out to
-  `objcopy --strip-debug --strip-unneeded` (then hashing the
-  stripped stream). Closes Finding 3.
+  position-dependent metadata before running it through `xxh3Hex`.
+  The on-disk `.o` keeps its bytes; only the cache-key digest is
+  computed over the canonical form. Requires a small ELF reader
+  or shelling out to `objcopy --strip-debug --strip-unneeded`
+  (then hashing the stripped stream). Closes Finding 3.
 - **Cheap alternative.** Include `.hi` ABI fingerprints alongside
   `.o` digests in the cache key. This wouldn't flip the current
   bench's misses (the `.o`s really differ), but it would let

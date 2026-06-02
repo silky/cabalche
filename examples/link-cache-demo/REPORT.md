@@ -26,7 +26,7 @@ the edit lands halfway up the cone instead.
 ## Reproduce
 
 ```sh
-scripts/link-cache-demo-bench.sh --cabal=/home/noon/dev/ext/cabal/result-opt/bin/cabal --runs=3 --verify
+scripts/link-cache-demo-bench.sh --cabal=/nix/store/vhr6yp4cahlrffcm8nrb7yg9bw0mpml6-cabal-install-3.17.0.0/bin/cabal --runs=3 --verify
 ```
 
 ## What this measures
@@ -58,21 +58,21 @@ do not poison iteration N+1.
 
 ## Results
 
-- `cabal`     : /home/noon/dev/ext/cabal/result-opt/bin/cabal
+- `cabal`     : /nix/store/vhr6yp4cahlrffcm8nrb7yg9bw0mpml6-cabal-install-3.17.0.0/bin/cabal
 - `runs`      : 3
-- `noop floor`: 0.052s (cabal plan + scan, no edit; inherited by every row below)
+- `noop floor`: 0.047s (cabal plan + scan, no edit; inherited by every row below)
 
 | scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 2.066 | 1.388 | 0.678 | 32.8% | 24 | 0 | 8.0 / 9 |
-| add-unexported | 2.051 | 1.466 | 0.585 | 28.5% | 24 | 0 | 8.0 / 9 |
-| add-exported | 2.334 | 2.360 | -0.026 | -1.1% | 6 | 18 | 2.0 / 9 |
-| modify-type | 2.465 | 2.526 | -0.061 | -2.5% | 6 | 18 | 2.0 / 9 |
-| refactor-internal | 2.032 | 1.574 | 0.458 | 22.5% | 15 | 9 | 5.0 / 9 |
-| whitespace-only | 2.086 | 1.601 | 0.485 | 23.3% | 15 | 9 | 5.0 / 9 |
-| comment-only | 2.183 | 1.604 | 0.579 | 26.5% | 15 | 9 | 5.0 / 9 |
-| reorder-exports | 2.217 | 1.608 | 0.609 | 27.5% | 15 | 9 | 5.0 / 9 |
-| edit-leaf-of-mid-lib | 1.929 | 1.673 | 0.256 | 13.3% | 3 | 9 | 1.0 / 9 |
+| body-stable | 1.949 | 1.353 | 0.596 | 30.6% | 24 | 0 | 8.0 / 9 |
+| add-unexported | 2.048 | 1.379 | 0.669 | 32.7% | 24 | 0 | 8.0 / 9 |
+| add-exported | 2.376 | 2.365 | 0.011 | 0.5% | 6 | 18 | 2.0 / 9 |
+| modify-type | 2.446 | 2.525 | -0.079 | -3.2% | 6 | 18 | 2.0 / 9 |
+| refactor-internal | 2.266 | 1.595 | 0.671 | 29.6% | 15 | 9 | 5.0 / 9 |
+| whitespace-only | 2.191 | 1.673 | 0.518 | 23.6% | 15 | 9 | 5.0 / 9 |
+| comment-only | 2.254 | 1.683 | 0.571 | 25.3% | 15 | 9 | 5.0 / 9 |
+| reorder-exports | 2.279 | 1.687 | 0.592 | 26.0% | 15 | 9 | 5.0 / 9 |
+| edit-leaf-of-mid-lib | 2.074 | 1.664 | 0.410 | 19.8% | 3 | 9 | 1.0 / 9 |
 
 ## Per-target outcomes
 
