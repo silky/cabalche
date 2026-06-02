@@ -1,5 +1,9 @@
-{"scenario":"body-stable","off_seconds":1.352,"on_seconds":0.628,"speedup_pct":53.6,"hits_total":27,"misses_total":0,"runs":3}
-{"scenario":"add-unexported","off_seconds":1.350,"on_seconds":0.645,"speedup_pct":52.2,"hits_total":27,"misses_total":0,"runs":3}
-{"scenario":"add-exported","off_seconds":2.339,"on_seconds":1.593,"speedup_pct":31.9,"hits_total":9,"misses_total":18,"runs":3}
-{"scenario":"modify-type","off_seconds":2.346,"on_seconds":1.682,"speedup_pct":28.3,"hits_total":9,"misses_total":18,"runs":3}
-{"scenario":"refactor-internal","off_seconds":1.410,"on_seconds":0.780,"speedup_pct":44.7,"hits_total":18,"misses_total":9,"runs":3}
+{"scenario":"body-stable","off_seconds":1.369,"on_seconds":0.714,"speedup_pct":47.8,"hits_total":24,"misses_total":0,"runs":3}
+{"scenario":"add-unexported","off_seconds":1.411,"on_seconds":0.729,"speedup_pct":48.3,"hits_total":24,"misses_total":0,"runs":3}
+{"scenario":"add-exported","off_seconds":2.344,"on_seconds":2.383,"speedup_pct":-1.7,"hits_total":6,"misses_total":18,"runs":3}
+{"scenario":"modify-type","off_seconds":2.475,"on_seconds":2.401,"speedup_pct":3.0,"hits_total":6,"misses_total":18,"runs":3}
+{"scenario":"refactor-internal","off_seconds":1.735,"on_seconds":1.154,"speedup_pct":33.5,"hits_total":15,"misses_total":9,"runs":3}
+{"scenario":"whitespace-only","off_seconds":1.647,"on_seconds":1.065,"speedup_pct":35.3,"hits_total":15,"misses_total":9,"runs":3}
+{"scenario":"comment-only","off_seconds":2.014,"on_seconds":1.320,"speedup_pct":34.5,"hits_total":15,"misses_total":9,"runs":3}
+{"scenario":"reorder-exports","off_seconds":1.810,"on_seconds":1.110,"speedup_pct":38.7,"hits_total":15,"misses_total":9,"runs":3}
+{"scenario":"edit-leaf-of-mid-lib","off_seconds":1.345,"on_seconds":1.023,"speedup_pct":23.9,"hits_total":3,"misses_total":9,"runs":3}
