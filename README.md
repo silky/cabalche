@@ -113,6 +113,32 @@ off vs on, per-target HIT/MISS, soundness verification), see
 `REPORT.md` there is regenerated from
 `scripts/link-cache-demo-bench.sh`.
 
+### Trying it on your own project
+
+[`scripts/link-cache-compare.sh`](scripts/link-cache-compare.sh)
+runs an A/B benchmark of two cabal binaries on a real repo and
+prints a side-by-side wall-clock comparison. Provide a patch file
+that simulates the edits you actually make, and it will drive the
+repo through a cold build plus N rounds of `apply patch` → build →
+`revert patch` → build, once per cabal:
+
+```sh
+scripts/link-cache-compare.sh \
+  --repo=$HOME/dev/my-project \
+  --package=my-package          # or "all"
+  --patch=$HOME/edits/typical.patch \
+  --cabal-a=$(which cabal)      # baseline
+  --cabal-b=$HOME/dev/ext/cabal/result-opt/bin/cabal
+```
+
+Each cabal gets its own `--builddir`; `cabal-b` gets a fresh
+`CABAL_LINK_CACHE_DIR`. The output is a markdown report comparing
+cold / median-edit / median-revert wall times, with the link-cache
+HIT/MISS counts for `cabal-b`. Run `--help` for the full flag set.
+If the repo needs a nix dev-env (e.g. hydra's
+`libsodium`/`secp256k1`), wrap the call:
+`nix develop --command scripts/link-cache-compare.sh …`.
+
 ### How to disable
 
 Either at the call site:
