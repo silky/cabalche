@@ -325,7 +325,7 @@ MISS_B=$(stats_count "$CACHE_B/.stats.jsonl" miss)
   echo "**$NAME_B link-cache stats** (whole pass, all build steps):"
   echo
   echo "- HITs:    $HITS_B"
-  echo "- MISSes:  $MISS_B"
+  echo "- misses:  $MISS_B"
   echo
   echo "## Details (per-iteration)"
   cat "$DETAILS_FILE"
