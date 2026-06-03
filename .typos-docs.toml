@@ -15,3 +15,8 @@ extend-ignore-re = [
 # Unicode category, not a misspelling of 'And'.
 nd = "nd"
 certifi = "certifi" # Python package name
+# ELF relocation section name prefix ('.rela.text', '.rela.data', …);
+# referenced in examples/link-cache-demo/PLAN-canonical-object-hash.md.
+rela = "rela"
+# DWARF debug section name ('.debug_aranges'); same doc.
+aranges = "aranges"

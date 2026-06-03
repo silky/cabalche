@@ -24,8 +24,8 @@ single biggest one).
   ordering in the `.symtab`/`.strtab`) hash to different cache
   keys → MISS.
 - **Why it matters.** On hydra's `add-unexported/hydra-node`, the
-  one MISSed lib archive (`libHShydra-prelude-2.1.0-inplace.a`)
-  cascades to **5+ exe MISSes** because the exe links include the
+  one missed lib archive (`libHShydra-prelude-2.1.0-inplace.a`)
+  cascades to **5+ exe misses** because the exe links include the
   edited lib's archive in their cache key. If the lib's
   archive HIT, those exes would also HIT — potentially adding
   another ~5–10s to revert-style speedups on top of what the
@@ -44,7 +44,7 @@ single biggest one).
 shape is:
 
 ```
-17 HITs, 6 MISSes per build:
+17 HITs, 6 misses per build:
 - HIT: every library .so + most library .a
 - HIT: every test-lib .a
 - MISS: libHShydra-prelude-2.1.0-inplace.a        ← the edited lib
@@ -55,7 +55,7 @@ Investigating the lone lib MISS:
 
 1. `Hydra/Prelude.dyn_o` is byte-identical between baseline and
    post-edit (`.so` HITs).
-2. `Hydra/Prelude.o` differs by 30 bytes (`.a` MISSes).
+2. `Hydra/Prelude.o` differs by 30 bytes (`.a` misses).
 3. `nm` reports the same 178 symbols in both `.o`s.
 4. `readelf --syms` shows two GLOBAL UNDEFINED symbols swapping
    positions:
@@ -68,7 +68,7 @@ Investigating the lone lib MISS:
 The two `.o`s are *semantically equivalent* from the linker's
 point of view: same code, same exported symbols, same UND symbols.
 But the byte-hash treats them as distinct → MISS → 5+ cascading
-exe MISSes.
+exe misses.
 
 ## The proposed fix
 
@@ -177,14 +177,14 @@ under symbol-reorder noise.)
 ## Expected gain
 
 - **Demo (`examples/link-cache-demo/`)**: probably small. The
-  scenarios where the cache currently MISSes (`refactor-internal`,
+  scenarios where the cache currently misses (`refactor-internal`,
   `whitespace-only`, `comment-only`, `reorder-exports`) MISS
   because the `.o` files have genuine code differences (renamed
   bindings, added comments shifting line tables in debug
   sections — which we'd also want to canonicalise, see "Future
   work" below). Symbol-order noise is rarer in the demo.
 - **Hydra (`add-unexported/hydra-node`)**: convert ~5 cascading
-  exe MISSes into HITs. The lib archive's contribution to the
+  exe misses into HITs. The lib archive's contribution to the
   exe's cache key becomes byte-stable; the exe HIT path takes
   over. Estimated additional speedup: ~10–20% on top of the
   current +22% / +46% (edit / revert) the exe-link cache
@@ -265,7 +265,7 @@ produce byte-equivalent `.o` files.
 - The fork's cache is unchanged: `.o` files continue to be
   hashed by raw bytes, preserving the existing soundness story.
 - The hydra cascade (`add-unexported/hydra-node` → 5 cascading
-  exe MISSes) is now a known *GHC non-determinism* issue, not a
+  exe misses) is now a known *GHC non-determinism* issue, not a
   cache one. File upstream against GHC: "`.data` closure ordering
   is non-deterministic between rebuilds of byte-stable
   interfaces, causing downstream caches to MISS on what would

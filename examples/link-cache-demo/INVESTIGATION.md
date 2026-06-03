@@ -463,10 +463,10 @@ inputs and misses the upstream archive links. Two ways forward:
   on hydra against `02-add-unexported.patch`:
   `Hydra/Prelude.dyn_o` is byte-identical before and after the
   edit, but `Hydra/Prelude.o` differs. The `.so` HITs the cache
-  while the `.a` MISSes — and that single `.a` MISS cascades to
+  while the `.a` misses — and that single `.a` MISS cascades to
   every exe link that includes `libHShydra-prelude.a` in its
   inputs. Closing this would convert the remaining 5–6 hydra
-  exe MISSes per scenario to HITs for unexported-binding edits.
+  exe misses per scenario to HITs for unexported-binding edits.
   Probable culprit: `-fPIC` (set for dynamic codegen) takes a
   different optimization path that drops unused `_`-prefixed
   bindings; non-PIC keeps them. A cache-side workaround would

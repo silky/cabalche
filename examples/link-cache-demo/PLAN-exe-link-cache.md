@@ -47,14 +47,14 @@ small set of patches simulating realistic edits. The fully
 worked-up reports live in `~/dev/w/tmp/cacheable/reports/`. The
 relevant headline numbers:
 
-| scenario           | target         | speedup | HITs / MISSes |
+| scenario           | target         | speedup | HITs / misses |
 |---|---|---:|---:|
 | add-unexported     | hydra-node     |  +14.9% | 107 / 23      |
 | body-stable        | hydra-node     |   +1.1% |  33 / 97      |
 | add-exported       | hydra-node     |   +1.4% |  22 / 108     |
 | (any)              | hydra-prelude  |  -2…-7% |  ≤11 / ≤6     |
 
-Of those 130 MISSes/HITs per scenario, **the exe link itself is
+Of those 130 misses/HITs per scenario, **the exe link itself is
 counted as `skipped`** — it never appears in the HIT or MISS column
 at all. The exe link is, on hydra-node specifically, plausibly the
 single longest link step in the project (~100 packages → one
