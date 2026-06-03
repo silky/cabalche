@@ -292,10 +292,28 @@ across the edit. Per-target table for the affected scenarios:
 Wall-clock speedup on these two scenarios went from ~37% (with
 the exe `SKIPPED`) to ~69% (with the exe in the cache):
 
-| scenario        | cache off (s) | cache on (s) | speedup (before) | speedup (after) |
+| scenario          | cache off (s) | cache on (s) | speedup (before exe-cache) | speedup (after exe-cache) |
 |---|---:|---:|---:|---:|
-| body-stable     | 2.462         | 0.736        | ~37%             | **+70.1%**      |
-| add-unexported  | 2.417         | 0.794        | ~36%             | **+67.1%**      |
+| body-stable       | 2.458         | 0.769        | ~37% | **+68.7%** |
+| add-unexported    | 2.423         | 0.754        | ~36% | **+68.9%** |
+| refactor-internal | 2.573         | 0.768        | ~12% | **+70.2%** |
+| whitespace-only   | 2.498         | 0.782        | ~10% | **+68.7%** |
+| comment-only      | 2.420         | 0.768        | ~10% | **+68.3%** |
+| reorder-exports   | 2.447         | 0.761        |  ~9% | **+68.9%** |
+| edit-leaf-of-mid-lib | 2.290     | 1.901        |  ~0% | **+17.0%** |
+
+Seven of the nine scenarios now HIT 9/9 at ~68% speedup, up
+from `body-stable` + `add-unexported` only at ~37% before the
+exe-link cache. The remaining two (`add-exported`, `modify-type`)
+are interface-changing edits where the cache fundamentally can't
+help — `.hi` cascades through the dep graph and downstream `.o`
+files genuinely differ.
+
+(An earlier draft of this doc reported the line-shift cluster as
+~10% rather than ~68%; that turned out to be a bench
+contamination from prior cascading scenarios, fixed in the same
+commit that produced these numbers — see
+[`INVESTIGATION.md`](INVESTIGATION.md) "Finding 3 (retracted)".)
 
 All nine scenarios pass `CABAL_LINK_CACHE_VERIFY=1 +
 CABAL_LINK_CACHE_VERIFY_FAIL=1`. No `HIT-DIVERGED`. The new exe

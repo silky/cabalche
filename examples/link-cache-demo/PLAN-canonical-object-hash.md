@@ -176,34 +176,27 @@ under symbol-reorder noise.)
 
 ## Expected gain
 
-- **Demo (`examples/link-cache-demo/`)**: probably small. The
-  scenarios where the cache currently misses (`refactor-internal`,
-  `whitespace-only`, `comment-only`, `reorder-exports`) MISS
-  because the `.o` files have genuine code differences (renamed
-  bindings, added comments shifting line tables in debug
-  sections — which we'd also want to canonicalise, see "Future
-  work" below). Symbol-order noise is rarer in the demo.
-- **Hydra (`add-unexported/hydra-node`)**: convert ~5 cascading
-  exe misses into HITs. The lib archive's contribution to the
-  exe's cache key becomes byte-stable; the exe HIT path takes
-  over. Estimated additional speedup: ~10–20% on top of the
-  current +22% / +46% (edit / revert) the exe-link cache
-  delivers.
-- **Real-world edits that change imports** (the case that
-  triggered the hydra MISS): every project. Adding/removing an
-  `import` statement changes the UND symbol set, which is then
-  reordered non-deterministically by GHC. Canonical mode would
-  fix this cascade for every project that uses static linking.
+- **Demo (`examples/link-cache-demo/`)**: **none.** The original
+  draft of this section assumed `whitespace-only` / `comment-only`
+  / `reorder-exports` / `refactor-internal` had `.o` line-number
+  shifts that a canonical hash could collapse. Those scenarios
+  turned out to already HIT 9/9 once the bench's between-iter
+  contamination was fixed (Finding 3 retracted, see
+  `INVESTIGATION.md`). The demo no longer motivates this work.
+- **Hydra (`add-unexported/hydra-node`)**: was the remaining
+  motivator — converting the lone lib MISS (and its 5 cascading
+  exe misses) into HITs. Estimated additional ~10–20% speedup on
+  top of the current +22% the exe-link cache delivers.
 
 ## Future work (out of scope)
 
 - **Canonicalise debug sections.** `.debug_line`, `.debug_info`,
   `.debug_aranges` contain source file paths and line-number
-  tables that shift on whitespace/comment-only edits. A
-  source-line-number-aware canonicalisation would close the
-  `whitespace-only` / `comment-only` cluster in the demo bench
-  (Finding 3 in `INVESTIGATION.md`). Harder than symbol-table
-  canonicalisation — line tables encode addresses.
+  tables. Theoretically these could shift on whitespace/comment
+  edits in builds that include debug info; in practice GHC's
+  default `-O1` codegen on this demo doesn't emit `.debug_*`
+  sections that vary, which is why the line-shift scenarios
+  HIT 9/9 without any canonicalisation.
 - **Mach-O parser** (macOS) and **PE/COFF parser** (Windows).
   Each is ~200–300 lines. Defer until there's a user reporting
   the asymmetric behaviour on those platforms.

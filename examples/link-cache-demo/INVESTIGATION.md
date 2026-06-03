@@ -28,12 +28,19 @@ The bench data referenced throughout is in
    the output file already exists on disk. Closed by `unlink`ing
    the target inside `withSkippableLink` before invoking the linker.
    After both fixes, every scenario passes `CABAL_LINK_CACHE_VERIFY_FAIL=1`.
-3. **Line-number shifts in source bust the `.o` byte-equality.**
-   `whitespace-only` and `comment-only` HIT 5/8 instead of the
-   theoretical 8/8 because adding/removing a line shifts every
-   subsequent line number, which appears in `.o` debug info, and
-   downstream importers re-hash. This is a class of cache wins
-   that's recoverable, with effort.
+3. **What looked like a line-shift `.o` non-determinism was a
+   bench-methodology artefact, not a real cache limitation.** An
+   earlier version of this document claimed `whitespace-only` and
+   `comment-only` HIT only 5/8 because GHC's `.o` debug info
+   embeds line numbers. That was wrong. Hard-resetting
+   `dist-newstyle` between bench iters (added to the bench
+   script after this was caught) shows those scenarios actually
+   HIT **9/9 at ~68% speedup** — same as `body-stable` /
+   `add-unexported`. The previous low numbers were caused by
+   prior cascading scenarios (`add-exported`, `modify-type`) in
+   the sweep leaving polluted `.o`/`.hi` files in
+   `dist-newstyle` that cabal's incremental-build heuristics
+   didn't fully roll forward.
 
 The rest of this document is the evidence.
 
@@ -256,98 +263,96 @@ directory when target exists" behavior with GHC and binutils. The
 behavior is probably documented somewhere; a flag to suppress it
 would let cabal stop having to `unlink` manually.
 
-## Finding 3: line-number shifts cost downstream HITs
+## Finding 3 (retracted): "line-number shifts cost downstream HITs"
 
-**Severity:** wins-on-the-table, no soundness issue.
+**Severity:** none — this finding was wrong. Kept here so the
+reasoning that led to it isn't lost.
 
-**Evidence.** `whitespace-only`, `comment-only`, and
-`reorder-exports` all show 6/9 HITs, the same partition as
-`refactor-internal`: `graph.{a,so}` and `engine.a` MISS. The
-expectation was 9/9 for these (lexer drops whitespace and comments,
-GHC canonicalises export order).
+**Original claim.** `whitespace-only`, `comment-only`, and
+`reorder-exports` showed only 6/9 HITs in the sweep, while
+`body-stable` / `add-unexported` got 9/9. The hypothesis was
+that GHC's `.o` files embed source line numbers (or source-file
+fingerprints), so a blank line / comment / export-order change
+shifts those bytes even when the source is semantically
+equivalent.
 
-The misses happen because GHC's `.o` files embed source line
-numbers (and possibly source file fingerprints) for use in error
-messages and `HasCallStack`. A blank line inserted in `Util.hs`
-shifts every subsequent line number; `Util.o`'s embedded
-line-number table changes; `Util`'s `.hi` references those line
-numbers in its source-location metadata; downstream importers
-re-hash; their `.o` files come out byte-different; their `.a`
-keys change; cache misses.
+**What was actually happening.** Bench-methodology artefact.
+The sweep ran `add-exported` and `modify-type` *before* the
+line-shift cluster; those scenarios cascade through the `.hi`
+graph and recompile downstream modules. Cabal's incremental-
+build heuristics in the bench's between-iter "sync" step didn't
+roll all those downstream `.o` files back to baseline (their
+mtimes were newer than the source mtime cabal had just
+checked-out). The polluted `.o` files were then linked into
+the lib `.a`/`.so`, which is what hashed differently from the
+baseline blob and caused the misses.
 
-This is consistent with the surprise that `demo-codec.{a,so}` HITs
-in these scenarios (it doesn't import `Util`) but `demo-graph.a/so`
-and `demo-engine.a` don't (they do). The cache is faithfully
-tracking real `.o` bytes; the bytes are just sensitive to
-position-information changes that shouldn't matter semantically.
+**How we found out.** Running each scenario *in isolation*
+(`--scenarios=whitespace-only` etc.) showed 9/9 HITs at ~68%
+speedup — exactly the same as `body-stable`. The sweep-vs-solo
+discrepancy is what flushed out the contamination.
 
-**Cache-local fix (proposed).**
+**Fix.** Hard-reset `dist-newstyle` before each iter in the
+bench (`scripts/link-cache-demo-bench.sh`). With that change
+the sweep now reports the same 9/9, ~68% numbers as solo
+runs. The current `REPORT.md` reflects the corrected sweep.
 
-- **Hash `.o` files canonically:** strip the line-number /
-  debug-info / source-file-fingerprint sections before computing
-  the input digest. As with Finding 2's `-shared` proposal, this
-  requires an ELF parser but is the lasting fix that would
-  generalise across edit shapes that are "no-op + line shift".
-- **Cheaper alternative:** include `.hi` ABI fingerprints alongside
-  `.o` digests, weighted to dominate when the `.hi` is byte-stable.
-  This wouldn't actually flip the bench's misses (the `.o` files
-  really do differ), but it would let downstream consumers decide
-  to bypass relink when interface stability is provable.
+**Implication for canonical-`.o` hashing.** The original
+hypothesis was the headline justification for the canonical-
+hash work sketched in `PLAN-canonical-object-hash.md`. Since
+the line-shift problem doesn't actually exist on this demo, the
+remaining justification for canonical hashing comes from
+hydra-style symbol-table reordering — and that one turned out
+to be unsound (see `PLAN-canonical-object-hash.md`'s "Why this
+can't work as planned"). Two motivations for canonical hashing
+have now been retracted; the design is no longer on the
+roadmap.
 
-**Asymmetry note.** Several scenarios show `engine.a` MISS but
-`engine.so` HIT (`refactor-internal`, `whitespace-only`,
-`comment-only`, `reorder-exports`). The static archive uses `.o`
-files; the shared library uses `.dyn_o` files (separately
-compiled). The asymmetry says that `.dyn_o` for these scenarios is
-byte-stable but `.o` is not. Worth pinning down whether GHC's
-dynamic-way codegen differs from static-way codegen in how it
-embeds source positions.
+**`.dyn_o` vs `.o` asymmetry note.** The original finding also
+called out that some scenarios missed on `.a` but HIT on `.so`
+(`refactor-internal` etc.). With the corrected bench every
+scenario HITs both ways, so that asymmetry is also a sweep-
+contamination artefact, not a real GHC codegen quirk.
 
 ## Finding 4: structural partition (the good news)
 
-For completeness, the partition that *does* match prediction:
+The partition that *does* match prediction, on the corrected
+sweep:
 
-- `body-stable` and `add-unexported` HIT 9/9. GHC's `-O1`
-  dead-code-eliminates a no-op `let` wrapper and any unused
-  underscore-prefixed binding; the `.o` files are byte-equal to
-  baseline; every link in the cascade HITs.
-- `refactor-internal`, `whitespace-only`, `comment-only`, and
-  `reorder-exports` HIT 6/9 — exactly the prediction for an
-  interface-stable edit that perturbs `Util.o` bytes:
-  `demo-codec.{a,so}` HIT (no `Util` import), the deeper libs MISS.
-- `add-exported` and `modify-type` HIT 3/9 — exactly the prediction
-  for an ABI-changing edit: only `demo-codec.{a,so}` (which doesn't
-  import `Util`) HIT.
-- `edit-leaf-of-mid-lib` HITs only `engine.so` and `demo-app`. The
-  prediction was that `demo-core` and `demo-graph` would HIT (they
-  don't depend on `demo-codec`), but they don't. This is likely a
-  bench artefact: the test sequence's incremental rebuild leaves
-  `demo-core` and `demo-graph`'s `.o` files in a state that doesn't
-  exactly match the cold-populate, *or* the dep walks pull
-  `Frame.hs` into more `.hi` graphs than the source dependency
-  suggests. Worth investigating.
+- `body-stable`, `add-unexported`, `refactor-internal`,
+  `whitespace-only`, `comment-only`, and `reorder-exports` all
+  HIT 9/9 at ~68% speedup. GHC's `-O1` dead-code-eliminates
+  no-op `let`s and unused underscore-prefixed bindings, and the
+  lexer drops whitespace and comments before they reach
+  codegen; the `.o` files for the touched module and every
+  downstream module are byte-equal to baseline; every link in
+  the cascade HITs.
+- `add-exported` and `modify-type` HIT 2/9 — exactly the
+  prediction for an ABI-changing edit: only `demo-codec.{a,so}`
+  (which doesn't import `Util`) HIT.
+- `edit-leaf-of-mid-lib` HITs `core.{a,so}` (the leaf isn't a
+  `Util` consumer) but the rest of the cone misses — the touched
+  module's `.o` propagates through `demo-codec` →
+  `demo-engine` → `demo-app`.
 
 ## Classification of every MISS
 
 A = inputs differ genuinely (cache cannot help under byte-exact model)
 B = ghc-recompile-conservative (downstream `.o` differs without semantic justification — upstream GHC fix)
 C = cabal-relink-eager / cache-key-incomplete (the cache could close this gap)
-D = key-relaxable (cache key contains something soundness doesn't require)
 F = fixed in this branch
+
+Updated for the corrected bench (Finding 3 retracted; see above):
 
 | scenario | target | outcome | class |
 |---|---|---|---|
-| body-stable, add-unexported | all 8 cached + exe skipped | HIT (8) + SKIPPED (1) | – |
-| add-exported | core.{a,so}, graph.{a,so}, engine.{a,so} | MISS | A (`.o` of touched module + `.hi` of touched module both change; downstream forced recompile by GHC is correct) |
-| add-exported | demo-app | SKIPPED | **F** (was: spurious HIT — Finding 1, now fixed) |
-| modify-type | core.{a,so}, graph.{a,so}, engine.{a,so} | MISS | A |
-| modify-type | demo-app | SKIPPED | **F** (Finding 1, fixed) |
-| refactor-internal | core.{a,so} | MISS | A (`.o` of touched module differs) |
-| refactor-internal | graph.{a,so}, engine.a | MISS | **B/D** — `.hi` of `Util` is stable but downstream `.o` differs because GHC re-emits source-position-dependent data |
-| refactor-internal | demo-app | SKIPPED | **F** (was: spurious HIT, now fixed) |
-| whitespace-only, comment-only, reorder-exports | graph.{a,so}, engine.a | MISS | **D** — line shift propagates into `.o` debug info (Finding 3) |
-| edit-leaf-of-mid-lib | core.{a,so}, codec.{a,so}, graph.{a,so}, engine.a | MISS | A for `codec.*` + `engine.a` (real cascade); B/incremental-rebuild artefact for the others (need more investigation) |
-| any `.so` previously flagged HIT-DIVERGED | — | (none after fixes) | **F** (Finding 2, fixed) |
+| body-stable, add-unexported, refactor-internal, whitespace-only, comment-only, reorder-exports | all 9 link steps | **HIT 9/9** | – |
+| add-exported, modify-type | core.{a,so}, graph.{a,so}, engine.{a,so}, demo-app | MISS | A (`.o` and `.hi` of touched module both change; downstream forced recompile by GHC is correct; exe misses because its dep archives changed) |
+| add-exported, modify-type | codec.{a,so} | HIT | – (codec doesn't import `Util`) |
+| edit-leaf-of-mid-lib | codec.{a,so}, engine.{a,so}, demo-app | MISS | A (real cascade — `Frame.hs` change propagates through the cone) |
+| edit-leaf-of-mid-lib | core.{a,so}, graph.{a,so} | HIT | – (no `Frame` import) |
+| any link previously flagged HIT-DIVERGED | — | (none after fixes) | **F** (Finding 2, fixed) |
+| exe links previously SKIPPED in `--make` mode | — | (now HIT on every interface-stable scenario) | **F** (PLAN-exe-link-cache.md) |
 
 ## Prototype candidates, prioritised
 
@@ -423,31 +428,15 @@ HIT-rate jump from 8/9 → 9/9 nearly doubled the steady-state
 speedup. `--verify` continues to pass on all nine scenarios —
 the new exe blobs are byte-sound.
 
+After the corrected bench (Finding 3 retracted, see above), the
+demo headline goes further: **seven of the nine scenarios HIT
+9/9 at ~68% speedup**. Only the two interface-changing
+scenarios (`add-exported`, `modify-type`) and the leaf-edit
+scenario (`edit-leaf-of-mid-lib`) carry misses, all of them
+genuine.
+
 Hydra A/B numbers and a full retrospective live in
 [`PLAN-exe-link-cache.md`](PLAN-exe-link-cache.md).
-
-### Open: closing the `whitespace-only` / line-shift gap
-
-The `refactor-internal`/`whitespace-only`/`comment-only`/
-`reorder-exports` scenarios still only achieve 6/9 (now 5/8 with
-the exe forced to `skipped`) HITs out of the cone, because the
-touched module's `.o` differs from baseline even though its `.hi`
-doesn't — line numbers shifted in source, line-number tables
-shifted in `.o`. The cache faithfully sees those `.o`s as different
-inputs and misses the upstream archive links. Two ways forward:
-
-- **Canonical `.o` hashing.** Add a `hashInputCanonical` variant
-  that strips `.debug_*`, source-file fingerprints, and similar
-  position-dependent metadata before running it through `xxh3Hex`.
-  The on-disk `.o` keeps its bytes; only the cache-key digest is
-  computed over the canonical form. Requires a small ELF reader
-  or shelling out to `objcopy --strip-debug --strip-unneeded`
-  (then hashing the stripped stream). Closes Finding 3.
-- **Cheap alternative.** Include `.hi` ABI fingerprints alongside
-  `.o` digests in the cache key. This wouldn't flip the current
-  bench's misses (the `.o`s really differ), but it would let
-  downstream consumers decide to bypass the relink when interface
-  stability is provable.
 
 ### Other open items
 
@@ -455,23 +444,21 @@ inputs and misses the upstream archive links. Two ways forward:
   the index to `$CABAL_LINK_CACHE_DIR/.stat-index` on exit, load on
   start, invalidate stale entries. Doesn't change HIT rate; reduces
   per-build hashing time when the cache is large. Useful in CI.
-- **`.dyn_o` vs `.o` codegen asymmetry.** Several scenarios show
-  `engine.a` MISS but `engine.so` HIT for line-shift edits. The
-  static archive uses `.o` files; the shared library uses `.dyn_o`
-  files. The asymmetry says `.dyn_o` is byte-stable across line
-  shifts but `.o` is not. Worth a GHC investigation. Confirmed
-  on hydra against `02-add-unexported.patch`:
-  `Hydra/Prelude.dyn_o` is byte-identical before and after the
-  edit, but `Hydra/Prelude.o` differs. The `.so` HITs the cache
-  while the `.a` misses — and that single `.a` MISS cascades to
-  every exe link that includes `libHShydra-prelude.a` in its
-  inputs. Closing this would convert the remaining 5–6 hydra
-  exe misses per scenario to HITs for unexported-binding edits.
-  Probable culprit: `-fPIC` (set for dynamic codegen) takes a
-  different optimization path that drops unused `_`-prefixed
-  bindings; non-PIC keeps them. A cache-side workaround would
-  be "hash the .a's member-by-member content rather than the
-  archive bytes", but it costs an `ar`-format parser; a
+- **`.dyn_o` vs `.o` codegen asymmetry.** On the demo this
+  turned out to be a sweep-contamination artefact (see Finding
+  3 retraction above). On hydra it's a separate, real
+  phenomenon: `Hydra/Prelude.dyn_o` is byte-identical before and
+  after an unexported-binding edit, but `Hydra/Prelude.o`
+  differs. The `.so` HITs the cache while the `.a` misses — and
+  that single `.a` MISS cascades to every exe link that
+  includes `libHShydra-prelude.a` in its inputs. Closing this
+  would convert ~5 hydra exe misses per scenario to HITs for
+  unexported-binding edits. Probable culprit: `-fPIC` (set for
+  dynamic codegen) takes a different optimization path that
+  drops unused `_`-prefixed bindings; non-PIC keeps them. A
+  cache-side workaround would be "hash the .a's member-by-member
+  content rather than the archive bytes", but it costs an
+  `ar`-format parser; a
   GHC-side fix (make non-PIC codegen match) is cheaper if the
   GHC team agrees the asymmetry isn't load-bearing.
 
