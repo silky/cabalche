@@ -60,19 +60,19 @@ do not poison iteration N+1.
 
 - `cabal`     : /nix/store/vvlfv3m1bryfpsq1nn8lspnlyyy9csf0-cabal-install-3.17.0.0/bin/cabal
 - `runs`      : 3
-- `noop floor`: 0.068s (cabal plan + scan, no edit; inherited by every row below)
+- `noop floor`: 0.065s (cabal plan + scan, no edit; inherited by every row below)
 
 | scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 2.462 | 0.736 | 1.726 | 70.1% | 27 | 0 | 9.0 / 9 |
-| add-unexported | 2.417 | 0.794 | 1.623 | 67.1% | 27 | 0 | 9.0 / 9 |
-| add-exported | 2.705 | 2.756 | -0.051 | -1.9% | 6 | 21 | 2.0 / 9 |
-| modify-type | 2.804 | 2.977 | -0.173 | -6.2% | 6 | 21 | 2.0 / 9 |
-| refactor-internal | 2.523 | 2.208 | 0.315 | 12.5% | 12 | 15 | 4.0 / 9 |
-| whitespace-only | 2.518 | 2.268 | 0.250 | 9.9% | 12 | 15 | 4.0 / 9 |
-| comment-only | 2.440 | 2.198 | 0.242 | 9.9% | 12 | 15 | 4.0 / 9 |
-| reorder-exports | 2.426 | 2.198 | 0.228 | 9.4% | 12 | 15 | 4.0 / 9 |
-| edit-leaf-of-mid-lib | 2.246 | 2.271 | -0.025 | -1.1% | 0 | 15 | 0.0 / 9 |
+| body-stable | 2.458 | 0.769 | 1.689 | 68.7% | 27 | 0 | 9.0 / 9 |
+| add-unexported | 2.423 | 0.754 | 1.669 | 68.9% | 27 | 0 | 9.0 / 9 |
+| add-exported | 2.814 | 2.831 | -0.017 | -0.6% | 6 | 21 | 2.0 / 9 |
+| modify-type | 2.917 | 2.957 | -0.040 | -1.4% | 6 | 21 | 2.0 / 9 |
+| refactor-internal | 2.573 | 0.768 | 1.805 | 70.2% | 27 | 0 | 9.0 / 9 |
+| whitespace-only | 2.498 | 0.782 | 1.716 | 68.7% | 27 | 0 | 9.0 / 9 |
+| comment-only | 2.420 | 0.768 | 1.652 | 68.3% | 27 | 0 | 9.0 / 9 |
+| reorder-exports | 2.447 | 0.761 | 1.686 | 68.9% | 27 | 0 | 9.0 / 9 |
+| edit-leaf-of-mid-lib | 2.290 | 1.901 | 0.389 | 17.0% | 6 | 9 | 2.0 / 9 |
 
 ## Per-target outcomes
 
@@ -91,11 +91,11 @@ Target abbreviations: `core.a` = `libHSdemo-core-*.a`, etc.
 | add-unexported | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
 | add-exported | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
 | modify-type | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
-| refactor-internal | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
-| whitespace-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
-| comment-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
-| reorder-exports | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
-| edit-leaf-of-mid-lib | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| refactor-internal | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| whitespace-only | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| comment-only | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| reorder-exports | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| edit-leaf-of-mid-lib | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 |
 
 ## Soundness
 
@@ -107,8 +107,8 @@ divergence is escalated to a hard build error.
 
 | scenario | verdict | detail |
 |---|---|---|
-| body-stable | pass | verified=2 misses=7 |
-| add-unexported | pass | verified=2 misses=7 |
+| body-stable | pass | verified=6 misses=3 |
+| add-unexported | pass | verified=6 misses=3 |
 | add-exported | pass | verified=0 misses=9 |
 | modify-type | pass | verified=0 misses=9 |
 | refactor-internal | pass | verified=2 misses=7 |

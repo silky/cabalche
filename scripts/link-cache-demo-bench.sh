@@ -332,6 +332,18 @@ run_scenario() {
   for i in $(seq 1 "$RUNS"); do
     echo "--- iter $i / $RUNS"
 
+    # Hard-reset dist-newstyle so a prior scenario's cascade doesn't
+    # leave polluted .o/.hi files lying around for this iter to
+    # encounter. Without this, the canonical 9/9-HIT scenarios in the
+    # second half of the sweep (whitespace-only, comment-only,
+    # reorder-exports, refactor-internal) silently degrade to ~4/9
+    # because cabal's incremental-build heuristics don't always
+    # roll forward downstream .o files that GHC compiled
+    # non-deterministically under a prior cascade. The cost is one
+    # cold rebuild per iter (~15s for this demo), which we accept
+    # for measurement honesty.
+    rm -rf "$DEMO_DIR/dist-newstyle"
+
     # cache-off measurement (novel edit, no cache, full cost)
     restore_touch_all
     ( cd "$DEMO_DIR" && env CABAL_LINK_CACHE_DISABLE=1 "$CABAL" build all ) \
@@ -342,6 +354,7 @@ run_scenario() {
               "CABAL_LINK_CACHE_DISABLE=1")"
 
     # cache-on measurement (novel edit, baseline-only cache).
+    rm -rf "$DEMO_DIR/dist-newstyle"
     restore_touch_all
     ( cd "$DEMO_DIR" && env CABAL_LINK_CACHE_DISABLE=1 "$CABAL" build all ) \
       >"$LOG_DIR/${scen}-iter${i}-sync2.log" 2>&1
