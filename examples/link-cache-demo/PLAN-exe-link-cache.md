@@ -30,12 +30,13 @@ the largest unrealized win on the table.
   `ghcOptPackages`. The link pass now mirrors the library-link
   pattern cabal already uses: explicit object inputs, well-formed
   cache key.
-- **Measured outcome.** Demo: 8/9 → 9/9 HITs and a ~37% → ~69%
-  steady-state speedup. Hydra A/B (full table at the bottom of
-  this doc) widened the `add-unexported/hydra-node` speedup from
-  +14.9% (lib cache only, exe SKIPPED) to **+49.3% on edit** and
-  **+64.5% on revert** — ~3× the prior gain, driven almost
-  entirely by the exe link's wall-time share being recoverable.
+- **Measured outcome.** Demo: 8/9 → 9/9 HITs and a ~37% → ~70%
+  speedup on the two saturated scenarios (`body-stable`,
+  `add-unexported`) — the demo is small enough that this is the
+  whole gain. Hydra A/B (full table at the bottom of this doc)
+  widened the `add-unexported/hydra-node` *edit* speedup from
+  +14.9% (lib cache only, exe SKIPPED) to **+49.3%** — driven by
+  the exe link's wall-time share now being recoverable.
 
 ## Motivating evidence
 
@@ -293,8 +294,8 @@ the exe `SKIPPED`) to ~69% (with the exe in the cache):
 
 | scenario        | cache off (s) | cache on (s) | speedup (before) | speedup (after) |
 |---|---:|---:|---:|---:|
-| body-stable     | 2.438         | 0.764        | ~37%             | **+68.7%**      |
-| add-unexported  | 2.389         | 0.760        | ~36%             | **+68.2%**      |
+| body-stable     | 2.462         | 0.736        | ~37%             | **+70.1%**      |
+| add-unexported  | 2.417         | 0.794        | ~36%             | **+67.1%**      |
 
 All nine scenarios pass `CABAL_LINK_CACHE_VERIFY=1 +
 CABAL_LINK_CACHE_VERIFY_FAIL=1`. No `HIT-DIVERGED`. The new exe
@@ -302,44 +303,47 @@ blobs are byte-sound.
 
 ### Hydra (`scripts/link-cache-compare.sh` on `hydra-node`)
 
-Two A/B runs against the `02-add-unexported` patch:
+The interesting measurement is the *novel-edit* time — how long
+the rebuild takes after you've made a change. Two A/B runs
+against the `02-add-unexported` patch:
 
 **Run 1 — total cache effect** (new fork: cache disabled vs
 enabled, isolating the cache as a whole, including the new
 exe-link cache):
 
-| stage  | cache off (s) | cache on (s) | speedup |
+| stage | cache off (s) | cache on (s) | speedup |
 |---|---:|---:|---:|
-| cold   | 260.771       | 261.559      | -0.3% (noise) |
-| edit   |  28.611       |  14.492      | **+49.3%** |
-| revert |  28.506       |  10.128      | **+64.5%** |
+| cold  | 260.771       | 261.559      | -0.3% (noise) |
+| edit  |  28.611       |  14.492      | **+49.3%** |
 
 **Run 2 — marginal exe-link contribution** (old fork vs new fork,
 *both with cache enabled*, isolating only the exe-link work; uses
 `scripts/link-cache-compare.sh --a-cache`):
 
-| stage  | fork-without-exe (s) | fork-with-exe (s) | speedup |
+| stage | fork-without-exe (s) | fork-with-exe (s) | speedup |
 |---|---:|---:|---:|
-| cold   | 261.391              | 261.718           | -0.1% (noise) |
-| edit   |  18.467              |  14.351           | **+22.3%** |
-| revert |  19.590              |  10.514           | **+46.3%** |
+| cold  | 261.391              | 261.718           | -0.1% (noise) |
+| edit  |  18.467              |  14.351           | **+22.3%** |
 
 The user's *prior* report against the same patch (cabal 3.10 vs
 the older fork with exe link SKIPPED) showed only **+14.9%** on
-edit and **+15.1%** on revert. Run 1 confirms the total cache
-effect tripled. Run 2 confirms ~half of that tripling is the
-**exe-link contribution alone** — caching that single linker
-invocation buys another 22% on edit and 46% on revert *on top of*
-what the existing lib cache already delivers.
-
-The revert pass benefits most because the post-revert byte state
-exactly matches the baseline blob the cache already holds — the
-exe HIT is essentially free.
+edit. Run 1 confirms the total cache effect more than tripled.
+Run 2 confirms ~half of that tripling is the **exe-link
+contribution alone** — caching that single linker invocation
+buys another 22% on edit *on top of* what the existing lib cache
+already delivers.
 
 The cold-build delta of ±0.3% is within run-to-run noise. The
 extra GHC invocation per exe link (the link-only pass that used
 to be a re-`--make`) is a small, deterministic addition; the
 plan's risk of >5% cold-build regression did not materialise.
+
+(The link-cache-compare bench also reports a "revert" timing —
+build after `git apply -R` — which shows even larger speedups
+because the post-revert byte state happens to exactly match the
+baseline blob. That number isn't the headline measurement: real
+developers rarely sit in apply/revert/apply/revert loops. The
+*edit* row is the workflow that matters.)
 
 ### Compared to the demo, why hydra wins more
 

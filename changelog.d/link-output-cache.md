@@ -10,9 +10,9 @@ content hash. A relink with byte-equal inputs byte-copies the cached
 blob to the target and skips the linker call, which can turn a
 multi-second clean relink into a fraction of a second on large
 projects. Measured impact on hydra-node (a ~100-dep cardano-haskell
-binary, edit-rebuild loop): with the cache, edits run in roughly
-half the time and reverts run in roughly a third (+49.3% / +64.5%
-respectively against the same cabal with the cache disabled).
+binary): with the cache, a novel-edit rebuild runs in roughly half
+the wall time (+49.3% against the same cabal with the cache
+disabled, on the `add-unexported` patch).
 
 The cache key is `(tool identifier, target basename, toolchain id,
 sorted xxh3 digests of all link inputs)`. The target's directory is

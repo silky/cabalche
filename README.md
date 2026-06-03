@@ -34,9 +34,8 @@ and [`examples/link-cache-demo/INVESTIGATION.md`](examples/link-cache-demo/INVES
 for the measured benefit on a five-package demo project, and
 [`examples/link-cache-demo/PLAN-exe-link-cache.md`](examples/link-cache-demo/PLAN-exe-link-cache.md)
 for the exe-link work and its real-world impact on hydra
-(`add-unexported/hydra-node`: **+22% edit, +46% revert** purely
-from caching the exe link, on top of what the lib cache already
-delivers).
+(`add-unexported/hydra-node` edit rebuild: **+22% from the exe
+link alone**, on top of what the lib cache already delivers).
 
 ### Quick usage (Nix flake)
 
