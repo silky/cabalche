@@ -26,7 +26,7 @@ the edit lands halfway up the cone instead.
 ## Reproduce
 
 ```sh
-scripts/link-cache-demo-bench.sh --cabal=/nix/store/4xq6ckbj20xazl61hyd1mnz70cgylpvd-cabal-install-3.17.0.0/bin/cabal --runs=2 --verify
+scripts/link-cache-demo-bench.sh --cabal=/nix/store/vvlfv3m1bryfpsq1nn8lspnlyyy9csf0-cabal-install-3.17.0.0/bin/cabal --runs=3 --verify
 ```
 
 ## What this measures
@@ -58,21 +58,21 @@ do not poison iteration N+1.
 
 ## Results
 
-- `cabal`     : /nix/store/4xq6ckbj20xazl61hyd1mnz70cgylpvd-cabal-install-3.17.0.0/bin/cabal
-- `runs`      : 2
-- `noop floor`: 0.062s (cabal plan + scan, no edit; inherited by every row below)
+- `cabal`     : /nix/store/vvlfv3m1bryfpsq1nn8lspnlyyy9csf0-cabal-install-3.17.0.0/bin/cabal
+- `runs`      : 3
+- `noop floor`: 0.068s (cabal plan + scan, no edit; inherited by every row below)
 
 | scenario | cache off (s) | cache on (s) | saved (s) | speedup | HIT | MISS | HIT/build |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 2.370 | 0.761 | 1.609 | 67.9% | 18 | 0 | 9.0 / 9 |
-| add-unexported | 2.489 | 0.785 | 1.704 | 68.5% | 18 | 0 | 9.0 / 9 |
-| add-exported | 2.553 | 2.663 | -0.110 | -4.3% | 4 | 14 | 2.0 / 9 |
-| modify-type | 2.702 | 2.795 | -0.093 | -3.4% | 4 | 14 | 2.0 / 9 |
-| refactor-internal | 2.353 | 2.072 | 0.281 | 11.9% | 8 | 10 | 4.0 / 9 |
-| whitespace-only | 2.486 | 2.148 | 0.338 | 13.6% | 8 | 10 | 4.0 / 9 |
-| comment-only | 2.412 | 2.080 | 0.332 | 13.8% | 8 | 10 | 4.0 / 9 |
-| reorder-exports | 2.420 | 2.067 | 0.353 | 14.6% | 8 | 10 | 4.0 / 9 |
-| edit-leaf-of-mid-lib | 2.131 | 2.189 | -0.058 | -2.7% | 0 | 10 | 0.0 / 9 |
+| body-stable | 2.462 | 0.736 | 1.726 | 70.1% | 27 | 0 | 9.0 / 9 |
+| add-unexported | 2.417 | 0.794 | 1.623 | 67.1% | 27 | 0 | 9.0 / 9 |
+| add-exported | 2.705 | 2.756 | -0.051 | -1.9% | 6 | 21 | 2.0 / 9 |
+| modify-type | 2.804 | 2.977 | -0.173 | -6.2% | 6 | 21 | 2.0 / 9 |
+| refactor-internal | 2.523 | 2.208 | 0.315 | 12.5% | 12 | 15 | 4.0 / 9 |
+| whitespace-only | 2.518 | 2.268 | 0.250 | 9.9% | 12 | 15 | 4.0 / 9 |
+| comment-only | 2.440 | 2.198 | 0.242 | 9.9% | 12 | 15 | 4.0 / 9 |
+| reorder-exports | 2.426 | 2.198 | 0.228 | 9.4% | 12 | 15 | 4.0 / 9 |
+| edit-leaf-of-mid-lib | 2.246 | 2.271 | -0.025 | -1.1% | 0 | 15 | 0.0 / 9 |
 
 ## Per-target outcomes
 
@@ -87,15 +87,15 @@ Target abbreviations: `core.a` = `libHSdemo-core-*.a`, etc.
 
 | scenario | core.a | core.so | codec.a | codec.so | graph.a | graph.so | engine.a | engine.so | demo-app |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| body-stable | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
-| add-unexported | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 | 2/2 |
-| add-exported | 0/2 | 0/2 | 2/2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
-| modify-type | 0/2 | 0/2 | 2/2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
-| refactor-internal | 2/2 | 2/2 | 2/2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
-| whitespace-only | 2/2 | 2/2 | 2/2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
-| comment-only | 2/2 | 2/2 | 2/2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
-| reorder-exports | 2/2 | 2/2 | 2/2 | 2/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
-| edit-leaf-of-mid-lib | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 | 0/2 |
+| body-stable | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| add-unexported | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 | 3/3 |
+| add-exported | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| modify-type | 0/3 | 0/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| refactor-internal | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| whitespace-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| comment-only | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| reorder-exports | 3/3 | 3/3 | 3/3 | 3/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
+| edit-leaf-of-mid-lib | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 | 0/3 |
 
 ## Soundness
 
