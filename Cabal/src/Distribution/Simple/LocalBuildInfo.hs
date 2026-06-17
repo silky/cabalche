@@ -319,8 +319,24 @@ depLibraryPaths
     -- is a moot point if you are using a per-component build,
     -- because you never have any internal libraries in this case;
     -- they're all external.
-    let external_ipkgs = filter is_external (allPackages installed)
-        is_external ipkg = installedUnitId ipkg `notElem` internalDeps
+    let myUid = componentUnitId clbi
+        -- Exclude the component being linked from the external-package
+        -- list. If a previous build registered this package in the
+        -- in-place package DB, 'allPackages installed' will surface its
+        -- self-entry here; the existing 'is_external' check only filters
+        -- packages mentioned in 'componentPackageDeps clbi', which never
+        -- includes the package's own UID, so without this guard the
+        -- package's own build dir would be included in its own rpath.
+        -- The leak is invisible on the first build of a package (no
+        -- prior registration to find) but appears on every subsequent
+        -- relink, producing a different '.so' for the same '.o' inputs
+        -- and busting tools that depend on bit-reproducibility (notably
+        -- this fork's link-output cache, where it surfaces as
+        -- HIT-DIVERGED in 'CABAL_LINK_CACHE_VERIFY=1' mode).
+        external_ipkgs = filter is_external (allPackages installed)
+        is_external ipkg =
+          installedUnitId ipkg /= myUid
+            && installedUnitId ipkg `notElem` internalDeps
         -- First look for dynamic libraries in `dynamic-library-dirs`, and use
         -- `library-dirs` as a fall back.
         getDynDir pkg = case Installed.libraryDynDirs pkg of

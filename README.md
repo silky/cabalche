@@ -20,6 +20,169 @@ This Cabal Git repository contains the following main packages:
 The canonical upstream repository is located at
 https://github.com/haskell/cabal.
 
+---
+
+## Fork: content-addressed link-output cache
+
+This fork adds a content-addressed cache for the linker steps cabal
+drives (`ar`, `ld -r`, `ghc -shared`, `ghc -staticlib`, `ghc -o`,
+and now also the exe link `ghc -o <bin>`). On a relink with
+byte-equal `.o` inputs the cache byte-copies the prior output to
+the target and skips the linker call. See
+[`changelog.d/link-output-cache.md`](changelog.d/link-output-cache.md)
+and [`examples/link-cache-demo/INVESTIGATION.md`](examples/link-cache-demo/INVESTIGATION.md)
+for the measured benefit on a five-package demo project, and
+[`examples/link-cache-demo/PLAN-exe-link-cache.md`](examples/link-cache-demo/PLAN-exe-link-cache.md)
+for the exe-link work and its real-world impact on hydra
+(`add-unexported/hydra-node` edit rebuild: **+22% from the exe
+link alone**, on top of what the lib cache already delivers).
+
+### Quick usage (Nix flake)
+
+Add the fork as a flake input and apply its overlay to your nixpkgs.
+The overlay overrides `cabal-install` inside the chosen Haskell
+package set — `lib:Cabal` and `lib:Cabal-syntax` are *not* overridden
+in the global haskell set, so the rest of the haskell world isn't
+rebuilt.
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    cabal-cache.url = "github:silky/cabalche/cache-cabal-master";
+  };
+
+  outputs = { self, nixpkgs, cabal-cache, ... }: let
+    system = "x86_64-linux";
+    pkgs = import nixpkgs {
+      inherit system;
+      overlays = [ cabal-cache.overlays.default ];
+    };
+  in {
+    devShells.${system}.default = pkgs.mkShell {
+      packages = [
+        pkgs.haskell.packages.ghc984.cabal-install  # patched cabal
+        pkgs.haskell.compiler.ghc984
+      ];
+    };
+  };
+}
+```
+
+If you don't want to touch your nixpkgs overlay chain, drop the
+binary in directly:
+
+```nix
+# … in a devShell or mkDerivation:
+packages = [ cabal-cache.packages.${system}.cabal-optimized ];
+```
+
+`packages.cabal-optimized` is the same binary with `-O2
+-fexpose-all-unfoldings -fspecialise-aggressively` on `cabal-install`
+itself (2–3× longer to build, ~10% larger; only worth it if you care
+about the planner's hot-path latency).
+
+### What it looks like in use
+
+The first time the cache sees a link target it misses and stores the
+linker's output:
+
+```
+$ cabal build
+…
+[link-cache] MISS (ar-static) /…/libHSdemo-core-0.1.0.0-inplace.a
+[link-cache] MISS (ghc-shared) /…/libHSdemo-core-0.1.0.0-inplace-ghc9.10.3.so
+[link-cache] MISS (ar-static) /…/libHSdemo-codec-0.1.0.0-inplace.a
+…
+```
+
+A subsequent build that produces byte-equal link inputs HITs instead:
+
+```
+$ cabal build
+…
+[link-cache] HIT (ar-static) /…/libHSdemo-core-0.1.0.0-inplace.a
+[link-cache] HIT (ghc-shared) /…/libHSdemo-core-0.1.0.0-inplace-ghc9.10.3.so
+…
+```
+
+Per-link telemetry (`tool`, `target`, `outcome`, `input_bytes`, `ms`)
+is appended to `$CABAL_LINK_CACHE_DIR/.stats.jsonl` for offline
+analysis; `scripts/link-cache-summary.sh` aggregates it. The cache
+root defaults to `$XDG_CACHE_HOME/cabal/link-cache/` and survives
+across builds in the same user account.
+
+For an end-to-end measurement on a small five-package demo (cache
+off vs on, per-target HIT/MISS, soundness verification), see
+[`examples/link-cache-demo/`](examples/link-cache-demo/) — the
+`REPORT.md` there is regenerated from
+`scripts/link-cache-demo-bench.sh`.
+
+### Trying it on your own project
+
+[`scripts/link-cache-compare.sh`](scripts/link-cache-compare.sh)
+runs an A/B benchmark of two cabal binaries on a real repo and
+prints a side-by-side wall-clock comparison. Provide a patch file
+that simulates the edits you actually make, and it will drive the
+repo through a cold build plus N rounds of `apply patch` → build →
+`revert patch` → build, once per cabal:
+
+```sh
+scripts/link-cache-compare.sh \
+  --repo=$HOME/dev/my-project \
+  --package=my-package          # or "all"
+  --patch=$HOME/edits/typical.patch \
+  --cabal-a=$(which cabal)      # baseline
+  --cabal-b=$HOME/dev/ext/cabal/result-opt/bin/cabal
+```
+
+Each cabal gets its own `--builddir`; `cabal-b` gets a fresh
+`CABAL_LINK_CACHE_DIR`. The output is a markdown report comparing
+cold / median-edit / median-revert wall times, with the link-cache
+HIT/MISS counts for `cabal-b`. Run `--help` for the full flag set.
+If the repo needs a nix dev-env (e.g. hydra's
+`libsodium`/`secp256k1`), wrap the call:
+`nix develop --command scripts/link-cache-compare.sh …`.
+
+### How to disable
+
+Either at the call site:
+
+```sh
+CABAL_LINK_CACHE_DISABLE=1 cabal build all
+```
+
+or globally for your shell:
+
+```sh
+export CABAL_LINK_CACHE_DISABLE=1
+```
+
+`CABAL_LINK_CACHE_DISABLE=1` skips both the read and the write
+paths — every link runs the underlying tool. The full env-var
+contract is documented at the top of
+[`Cabal/src/Distribution/Simple/GHC/LinkManifest.hs`](Cabal/src/Distribution/Simple/GHC/LinkManifest.hs)
+(also: `CABAL_LINK_CACHE_DIR`, `CABAL_LINK_CACHE_MAX_BYTES`,
+`CABAL_LINK_CACHE_NO_STAT`, `CABAL_LINK_CACHE_NO_STATS`,
+`CABAL_LINK_CACHE_VERIFY`, `CABAL_LINK_CACHE_VERIFY_FAIL`).
+
+### CI note
+
+The `Bootstrap` and `Validate` workflows
+(`.github/workflows/bootstrap.yml`, `.github/workflows/validate.yml`)
+are disabled on this fork via `if: github.repository == 'haskell/cabal'`
+on each top-level job. The fork's distribution channel is the Nix
+flake above, so the full upstream matrix (Bootstrap pinned-plan
+JSONs, the 33-job Validate matrix, Build-alpine, dogfooding) isn't
+load-bearing here — the link-cache work is exercised by the in-tree
+`cabal-testsuite/PackageTests/LinkCache*` integration tests and the
+`examples/link-cache-demo/` bench, run locally against the
+flake-built `cabal`. The remaining CI workflows
+(`fourmolu`, `hlint`, `typos`, `whitespace`, `changelogs`, etc.)
+run unchanged.
+
+---
+
 Proposals for the Cabal project
 -------------------------------
 

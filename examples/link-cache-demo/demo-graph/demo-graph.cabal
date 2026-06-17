@@ -1,0 +1,33 @@
+cabal-version:      2.4
+name:               demo-graph
+version:            0.1.0.0
+synopsis:           Adjacency-list graph utilities for the link-cache demo.
+license:            BSD-3-Clause
+build-type:         Simple
+
+common opts
+  default-language:   Haskell2010
+  ghc-options:        -Wall -Wno-unused-imports
+
+library
+  import:             opts
+  hs-source-dirs:     src
+  build-depends:      base       >=4.18 && <5
+                    , containers
+                    , demo-core
+                    , mtl
+  exposed-modules:
+      Demo.Graph.Build
+      Demo.Graph.Traverse
+
+test-suite demo-graph-test
+  import:             opts
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Main.hs
+  build-depends:      base
+                    , containers
+                    , demo-core
+                    , demo-graph
+                    , tasty
+                    , tasty-hunit

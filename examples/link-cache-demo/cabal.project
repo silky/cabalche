@@ -1,0 +1,6 @@
+packages:
+  demo-core
+  demo-codec
+  demo-graph
+  demo-engine
+  demo-app

@@ -1,0 +1,36 @@
+cabal-version:      2.4
+name:               demo-codec
+version:            0.1.0.0
+synopsis:           JSON + framed-binary codecs for demo-core types.
+license:            BSD-3-Clause
+build-type:         Simple
+
+common opts
+  default-language:   Haskell2010
+  ghc-options:        -Wall -Wno-unused-imports
+
+library
+  import:             opts
+  hs-source-dirs:     src
+  build-depends:      base       >=4.18 && <5
+                    , aeson
+                    , bytestring
+                    , demo-core
+                    , text
+  exposed-modules:
+      Demo.Codec.Frame
+      Demo.Codec.Json
+
+test-suite demo-codec-test
+  import:             opts
+  type:               exitcode-stdio-1.0
+  hs-source-dirs:     test
+  main-is:            Main.hs
+  build-depends:      base
+                    , aeson
+                    , bytestring
+                    , demo-codec
+                    , demo-core
+                    , tasty
+                    , tasty-hunit
+                    , text

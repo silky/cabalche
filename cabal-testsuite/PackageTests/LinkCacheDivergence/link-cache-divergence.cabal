@@ -1,0 +1,17 @@
+name:          link-cache-divergence
+version:       0.1
+license:       BSD3
+build-type:    Simple
+cabal-version: >= 1.10
+
+library
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  build-depends:    base
+  exposed-modules:  Lib
+
+executable link-cache-divergence-exe
+  hs-source-dirs:   app
+  default-language: Haskell2010
+  main-is:          Main.hs
+  build-depends:    base, link-cache-divergence

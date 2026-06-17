@@ -16,6 +16,12 @@ on:
 
 jobs:
   bootstrap:
+    # Disabled on this fork: bootstrap/linux-*.json plans are pinned
+    # per-dep and don't include `xxhash-ffi` + `hashable` (added to
+    # lib:Cabal by the link-cache work). Distribution channel is the
+    # Nix flake, not from-scratch bootstrap. See the README for the
+    # full reasoning.
+    if: github.repository == 'haskell/cabal'
     strategy:
       matrix:
         os: [ubuntu-latest]
